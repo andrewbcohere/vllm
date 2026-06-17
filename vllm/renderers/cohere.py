@@ -388,9 +388,10 @@ class CohereRenderer(BaseRenderer[HfTokenizer]):
 
         # Lazy import to keep `cohere_melody` an optional dependency
         self._melody = _try_import_melody()
-        self._render_messages_async = make_async(
-            self.render_messages, executor=self._executor
-        )
+        # ``render_cmd3`` / ``render_cmd4`` are pure CPU work; cache the
+        # thread-pool wrapper once so the async path doesn't allocate a new
+        # adapter on every request.
+        self._render_async = make_async(self._render, executor=self._executor)
 
     def _render(self, fmt: str, config_dict: dict[str, Any]) -> str:
         if fmt == "cmd3":
@@ -437,11 +438,7 @@ class CohereRenderer(BaseRenderer[HfTokenizer]):
 
         chat_template_kwargs = dict(params.chat_template_kwargs)
         fmt, config_dict = _build_render_config(conversation, chat_template_kwargs)
-        # render_cmd3/4 are pure CPU work; offload to thread pool for parity
-        # with HfRenderer's async path.
-        prompt_text = await make_async(
-            self._render, executor=self._executor
-        )(fmt, config_dict)
+        prompt_text = await self._render_async(fmt, config_dict)
         prompt = parse_dec_only_prompt(prompt_text)
 
         if mm_data is not None:
