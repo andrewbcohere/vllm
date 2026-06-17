@@ -47,6 +47,7 @@ from vllm.entrypoints.cohere.protocol import (
     CohereCitation,
     CohereCitationEndEvent,
     CohereCitationStartEvent,
+    CohereDocumentContent,
     CohereFinishReason,
     CohereSystemMessageV2,
     CohereTextContent,
@@ -327,24 +328,50 @@ class CohereServingChatV2(OpenAIServingChat):
         cls, msg: CohereToolMessageV2
     ) -> dict[str, Any]:
         if isinstance(msg.content, str):
-            content: Any = msg.content
-        else:
-            text_parts: list[str] = []
-            for block in msg.content:
-                if isinstance(block, CohereTextContent):
-                    text_parts.append(block.text)
-                else:  # CohereDocumentContent
-                    # The OpenAI chat-completion shape only knows about
-                    # text tool results. Serialize the document so its data
-                    # is preserved in the prompt.
-                    text_parts.append(
-                        json.dumps(block.document.model_dump(exclude_none=True))
-                    )
-            content = "\n".join(text_parts)
+            return {
+                "role": "tool",
+                "tool_call_id": msg.tool_call_id,
+                "content": msg.content,
+            }
+
+        # When the tool result is text-only, flatten to a string for maximum
+        # compatibility with vanilla chat templates. When it includes
+        # documents, preserve them as structured content parts so the cohere
+        # renderer can surface them as grounding sources (the
+        # :class:`CohereRenderer` understands ``{type: document, document:
+        # {...}}`` blocks). Non-cohere renderers may not honor document
+        # blocks, but that matches the broader "documents are no-op for OSS
+        # models" contract documented on this endpoint.
+        has_documents = any(
+            isinstance(block, CohereDocumentContent) for block in msg.content
+        )
+        if not has_documents:
+            text = "\n".join(
+                block.text
+                for block in msg.content
+                if isinstance(block, CohereTextContent)
+            )
+            return {
+                "role": "tool",
+                "tool_call_id": msg.tool_call_id,
+                "content": text,
+            }
+
+        parts: list[dict[str, Any]] = []
+        for block in msg.content:
+            if isinstance(block, CohereTextContent):
+                parts.append({"type": "text", "text": block.text})
+            else:  # CohereDocumentContent
+                parts.append(
+                    {
+                        "type": "document",
+                        "document": block.document.model_dump(exclude_none=True),
+                    }
+                )
         return {
             "role": "tool",
             "tool_call_id": msg.tool_call_id,
-            "content": content,
+            "content": parts,
         }
 
     @classmethod
