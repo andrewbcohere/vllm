@@ -4,7 +4,7 @@
 # https://github.com/vllm-project/vllm/blob/main/vllm/entrypoints/anthropic/serving.py
 """Cohere Chat v2 API serving handler.
 
-Implements ``POST /v2/chat`` by translating the incoming Cohere v2 request
+Implements ``POST /cohere/v2/chat`` by translating the incoming Cohere v2 request
 into a standard :class:`ChatCompletionRequest` and delegating to
 :class:`OpenAIServingChat`. The actual prompt rendering is handled by
 vLLM's renderer pipeline (``vllm.renderers``):
@@ -143,7 +143,7 @@ def _map_finish_reason(reason: str | None) -> CohereFinishReason:
 
 
 class CohereServingChatV2(OpenAIServingChat):
-    """Handler for the Cohere Chat v2 API (``POST /v2/chat``).
+    """Handler for the Cohere Chat v2 API (``POST /cohere/v2/chat``).
 
     The handler is intentionally thin: it converts the v2 request into a
     :class:`ChatCompletionRequest` (preserving Cohere-specific fields such
@@ -199,7 +199,7 @@ class CohereServingChatV2(OpenAIServingChat):
         request: CohereChatV2Request,
         raw_request: Request | None = None,
     ) -> AsyncGenerator[str, None] | CohereChatV2Response | ErrorResponse:
-        """Implements ``POST /v2/chat``."""
+        """Implements ``POST /cohere/v2/chat``."""
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug(
                 "Received Cohere v2 chat request %s", request.model_dump_json()

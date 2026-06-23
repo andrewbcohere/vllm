@@ -17,7 +17,7 @@ avoid hand-mirroring the schema. We only own three things locally:
    discriminator]``).
 
 Importing this module pulls in the ``cohere`` package. The router that
-mounts ``POST /v2/chat`` guards on that import succeeding so vLLM still
+mounts ``POST /cohere/v2/chat`` guards on that import succeeding so vLLM still
 boots without the SDK installed.
 
 See https://docs.cohere.com/reference/chat for the upstream spec.
@@ -91,7 +91,7 @@ __all__ = [
 
 
 class CohereError(BaseModel):
-    """Top-level error body returned by ``/v2/chat`` error responses.
+    """Top-level error body returned by ``/cohere/v2/chat`` error responses.
 
     Cohere's documented error schemas are uniform: ``{message, id}``.
     """

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
-"""FastAPI router for the Cohere Chat v2 API (``POST /v2/chat``).
+"""FastAPI router for the Cohere Chat v2 API (``POST /cohere/v2/chat``).
 
 The Cohere v2 protocol models are sourced from the official ``cohere``
 Python SDK (``pip install cohere``). To keep that an *optional*
@@ -20,7 +20,7 @@ logger = init_logger(__name__)
 
 
 def attach_router(app: FastAPI) -> None:
-    """Register ``POST /v2/chat`` on ``app``.
+    """Register ``POST /cohere/v2/chat`` on ``app``.
 
     No-op (with an info log) when the optional ``cohere`` SDK isn't
     installed, since the v2 protocol models live there.
@@ -29,7 +29,7 @@ def attach_router(app: FastAPI) -> None:
         import cohere  # noqa: F401  -- dependency probe
     except ImportError:
         logger.info(
-            "cohere SDK not installed; /v2/chat endpoint disabled. "
+            "cohere SDK not installed; /cohere/v2/chat endpoint disabled. "
             "Install with `pip install cohere` to enable it."
         )
         return
@@ -73,7 +73,7 @@ def attach_router(app: FastAPI) -> None:
         )
 
     @router.post(
-        "/v2/chat",
+        "/cohere/v2/chat",
         dependencies=[Depends(validate_json_request)],
         responses={
             HTTPStatus.OK.value: {"content": {"text/event-stream": {}}},
@@ -97,7 +97,7 @@ def attach_router(app: FastAPI) -> None:
         try:
             result = await handler.create_chat_v2(request, raw_request)
         except Exception as e:  # noqa: BLE001 - report as 500 for parity
-            logger.exception("Error in /v2/chat: %s", e)
+            logger.exception("Error in /cohere/v2/chat: %s", e)
             return JSONResponse(
                 status_code=HTTPStatus.INTERNAL_SERVER_ERROR.value,
                 content=CohereError(message=str(e)).model_dump(exclude_none=True),

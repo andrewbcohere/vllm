@@ -361,7 +361,7 @@ class Citation(OpenAIBaseModel):
     so that grounded models (e.g. Cohere Command-family) can surface
     citation metadata through the standard chat completion responses. It is
     consumed by surfaces that expose citations (such as Cohere's
-    ``/v2/chat`` endpoint).
+    ``/cohere/v2/chat`` endpoint).
     """
 
     start: int | None = None
