@@ -27,24 +27,14 @@ from __future__ import annotations
 import time
 from typing import Any, Literal
 
+from cohere import types as _sdk
 from cohere.types import (
     AssistantChatMessageV2,
     AssistantMessageResponse,
-    ChatContentDeltaEvent,
-    ChatContentEndEvent,
-    ChatContentStartEvent,
-    ChatMessageEndEvent,
-    ChatMessageStartEvent,
     ChatMessageV2,
     ChatRequestSafetyMode,
-    ChatToolCallDeltaEvent,
-    ChatToolCallEndEvent,
-    ChatToolCallStartEvent,
-    ChatToolPlanDeltaEvent,
     Citation,
-    CitationEndEvent,
     CitationOptions,
-    CitationStartEvent,
     Document,
     ResponseFormatV2,
     SystemChatMessageV2,
@@ -56,21 +46,13 @@ from cohere.types import (
 )
 from pydantic import BaseModel, Field, field_validator
 
-# Re-export the SDK types so that ``vllm.entrypoints.cohere.serving`` and
-# friends can import everything they need from this module.
+# Re-export the SDK wire-format types alongside our local extensions so
+# ``vllm.entrypoints.cohere.serving`` and friends can import everything
+# they need from this module.
 __all__ = [
     "AssistantChatMessageV2",
     "AssistantMessageResponse",
-    "ChatContentDeltaEvent",
-    "ChatContentEndEvent",
-    "ChatContentStartEvent",
-    "ChatMessageEndEvent",
-    "ChatMessageStartEvent",
     "ChatMessageV2",
-    "ChatToolCallDeltaEvent",
-    "ChatToolCallEndEvent",
-    "ChatToolCallStartEvent",
-    "ChatToolPlanDeltaEvent",
     "Citation",
     "CitationEndEvent",
     "CitationOptions",
@@ -83,12 +65,21 @@ __all__ = [
     "CohereUsage",
     "CohereUsageBilledUnits",
     "CohereUsageTokens",
+    "ContentDeltaEvent",
+    "ContentEndEvent",
+    "ContentStartEvent",
     "Document",
+    "MessageEndEvent",
+    "MessageStartEvent",
     "ResponseFormatV2",
     "SystemChatMessageV2",
     "Thinking",
+    "ToolCallDeltaEvent",
+    "ToolCallEndEvent",
+    "ToolCallStartEvent",
     "ToolCallV2",
     "ToolChatMessageV2",
+    "ToolPlanDeltaEvent",
     "ToolV2",
     "UserChatMessageV2",
 ]
@@ -273,13 +264,60 @@ class CohereChatV2Response(BaseModel):
 # ---------------------------------------------------------------------------
 #
 # Cohere V2 streams a sequence of typed JSON events delivered as Server-
-# Sent Events. Each event class is exported above (``ChatMessageStartEvent``,
-# ``ChatContentDeltaEvent``, ``CitationStartEvent``, etc.). We don't build
-# a discriminated union here because the SDK's event classes don't carry
-# the ``type`` literal as a Pydantic field (it's handled by the SDK's own
-# deserializer), so pydantic ``Field(discriminator="type")`` would reject
-# it. Surfaces emit each event with ``model_dump_json()`` and clients
-# parse them by reading ``type`` directly.
+# Sent Events; each event's ``type`` field carries the discriminator. The
+# SDK exposes a Pydantic model per event but none of them declare ``type``
+# as a field (the SDK relies on its own deserializer for discrimination),
+# so a naive ``model_dump_json()`` would silently drop the discriminator
+# and break clients that demux on ``type``.
+#
+# We therefore subclass each SDK event and bake the wire-format ``type``
+# string in as a ``Literal`` field with a default. ``model_dump()`` now
+# emits ``type`` for free, and surfaces can simply construct the event
+# class and serialize it -- no manual ``type`` parameter needed.
 #
 # See https://docs.cohere.com/v2/docs/streaming and the OpenAPI
 # ``StreamedChatResponseV2`` schema for the wire-format reference.
+
+
+class MessageStartEvent(_sdk.ChatMessageStartEvent):
+    type: Literal["message-start"] = "message-start"
+
+
+class ContentStartEvent(_sdk.ChatContentStartEvent):
+    type: Literal["content-start"] = "content-start"
+
+
+class ContentDeltaEvent(_sdk.ChatContentDeltaEvent):
+    type: Literal["content-delta"] = "content-delta"
+
+
+class ContentEndEvent(_sdk.ChatContentEndEvent):
+    type: Literal["content-end"] = "content-end"
+
+
+class ToolPlanDeltaEvent(_sdk.ChatToolPlanDeltaEvent):
+    type: Literal["tool-plan-delta"] = "tool-plan-delta"
+
+
+class ToolCallStartEvent(_sdk.ChatToolCallStartEvent):
+    type: Literal["tool-call-start"] = "tool-call-start"
+
+
+class ToolCallDeltaEvent(_sdk.ChatToolCallDeltaEvent):
+    type: Literal["tool-call-delta"] = "tool-call-delta"
+
+
+class ToolCallEndEvent(_sdk.ChatToolCallEndEvent):
+    type: Literal["tool-call-end"] = "tool-call-end"
+
+
+class CitationStartEvent(_sdk.CitationStartEvent):
+    type: Literal["citation-start"] = "citation-start"
+
+
+class CitationEndEvent(_sdk.CitationEndEvent):
+    type: Literal["citation-end"] = "citation-end"
+
+
+class MessageEndEvent(_sdk.ChatMessageEndEvent):
+    type: Literal["message-end"] = "message-end"

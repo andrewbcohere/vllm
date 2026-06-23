@@ -25,22 +25,13 @@ import json
 import logging
 import time
 from collections.abc import AsyncGenerator
+from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
 from cohere.types import (
     AssistantChatMessageV2,
     AssistantMessageResponse,
-    ChatContentDeltaEvent,
-    ChatContentEndEvent,
-    ChatContentStartEvent,
-    ChatMessageEndEvent,
-    ChatMessageStartEvent,
-    ChatToolCallDeltaEvent,
-    ChatToolCallEndEvent,
-    ChatToolCallStartEvent,
     Citation,
-    CitationEndEvent,
-    CitationStartEvent,
     SystemChatMessageV2,
     ToolCallV2,
     ToolCallV2Function,
@@ -48,16 +39,27 @@ from cohere.types import (
     UserChatMessageV2,
 )
 from fastapi import Request
+from pydantic import BaseModel
 
 from vllm.engine.protocol import EngineClient
 from vllm.entrypoints.chat_utils import ChatTemplateContentFormatOption
 from vllm.entrypoints.cohere.protocol import (
+    CitationEndEvent,
+    CitationStartEvent,
     CohereChatV2Request,
     CohereChatV2Response,
     CohereFinishReason,
     CohereUsage,
     CohereUsageBilledUnits,
     CohereUsageTokens,
+    ContentDeltaEvent,
+    ContentEndEvent,
+    ContentStartEvent,
+    MessageEndEvent,
+    MessageStartEvent,
+    ToolCallDeltaEvent,
+    ToolCallEndEvent,
+    ToolCallStartEvent,
 )
 from vllm.entrypoints.logger import RequestLogger
 from vllm.entrypoints.openai.chat_completion.protocol import (
@@ -95,19 +97,29 @@ def _sse(data: str) -> str:
     return f"data: {data}\n\n"
 
 
-def _emit(event: Any, type_str: str) -> str:
-    """Serialize an SDK stream event with the wire-format ``type`` field.
+def _emit(event: BaseModel) -> str:
+    """Serialize a typed stream event into an SSE frame.
 
-    The cohere SDK's stream-event Pydantic models (``ChatMessageStartEvent``
-    etc.) don't declare ``type`` as a field -- the SDK handles type
-    discrimination in its own deserializer -- so a vanilla
-    ``model_dump_json()`` would drop the discriminator and break clients
-    that demux on ``type``. We dump the event, splice ``type`` back in,
-    and re-serialize as JSON before wrapping in an SSE frame.
+    The typed event classes in ``vllm.entrypoints.cohere.protocol``
+    (``MessageStartEvent``, ``ContentStartEvent``, ``CitationStartEvent``,
+    ...) bake the wire-format ``type`` field into the model definition,
+    so a plain ``model_dump_json()`` already carries the discriminator.
     """
-    payload = event.model_dump(exclude_none=True)
-    payload["type"] = type_str
-    return _sse(json.dumps(payload))
+    return _sse(event.model_dump_json(exclude_none=True))
+
+
+class ContentBlockType(StrEnum):
+    """Wire-format / internal discriminator for chat content blocks.
+
+    ``THINKING`` and ``TEXT`` are the documented Cohere v2 content-block
+    type discriminators on the wire. ``TOOL_CALL`` is reserved for the
+    internal stream state machine (see :class:`_StreamState`) when a
+    tool call is the currently open block; it is never serialized.
+    """
+
+    THINKING = "thinking"
+    TEXT = "text"
+    TOOL_CALL = "tool_call"
 
 
 # Mapping of vLLM/OpenAI finish reasons to Cohere's enum.
@@ -562,9 +574,13 @@ class CohereServingChatV2(OpenAIServingChat):
         # (``Text/ThinkingAssistantMessageResponseContentItem``).
         content_blocks: list[dict[str, Any]] = []
         if msg.reasoning:
-            content_blocks.append({"type": "thinking", "thinking": msg.reasoning})
+            content_blocks.append(
+                {"type": ContentBlockType.THINKING, "thinking": msg.reasoning}
+            )
         if msg.content:
-            content_blocks.append({"type": "text", "text": msg.content})
+            content_blocks.append(
+                {"type": ContentBlockType.TEXT, "text": msg.content}
+            )
 
         tool_calls: list[ToolCallV2] | None = None
         if msg.tool_calls:
@@ -587,7 +603,9 @@ class CohereServingChatV2(OpenAIServingChat):
         if tool_calls and msg.reasoning:
             tool_plan = msg.reasoning
             content_blocks = [
-                blk for blk in content_blocks if blk.get("type") != "thinking"
+                blk
+                for blk in content_blocks
+                if blk.get("type") != ContentBlockType.THINKING
             ]
 
         assistant_msg = AssistantMessageResponse(
@@ -692,11 +710,10 @@ class CohereServingChatV2(OpenAIServingChat):
 
                 if not state.started:
                     yield _emit(
-                        ChatMessageStartEvent(
+                        MessageStartEvent(
                             id=chunk.id,
                             delta={"message": {"role": "assistant"}},
-                        ),
-                        "message-start",
+                        )
                     )
                     state.started = True
 
@@ -760,33 +777,34 @@ class CohereServingChatV2(OpenAIServingChat):
         self, state: _StreamState, delta_text: str
     ) -> list[str]:
         events: list[str] = []
-        if state.active_block != "thinking":
+        if state.active_block != ContentBlockType.THINKING:
             events.extend(self._close_open_blocks_inner(state))
             idx = state.next_content_index()
-            state.active_block = "thinking"
+            state.active_block = ContentBlockType.THINKING
             state.active_block_index = idx
             events.append(
                 _emit(
-                    ChatContentStartEvent(
+                    ContentStartEvent(
                         index=idx,
                         delta={
                             "message": {
-                                "content": {"type": "thinking", "thinking": ""}
+                                "content": {
+                                    "type": ContentBlockType.THINKING,
+                                    "thinking": "",
+                                }
                             }
                         },
-                    ),
-                    "content-start",
+                    )
                 )
             )
         events.append(
             _emit(
-                ChatContentDeltaEvent(
+                ContentDeltaEvent(
                     index=state.active_block_index,
                     delta={
                         "message": {"content": {"thinking": delta_text}}
                     },
-                ),
-                "content-delta",
+                )
             )
         )
         return events
@@ -795,31 +813,32 @@ class CohereServingChatV2(OpenAIServingChat):
         self, state: _StreamState, delta_text: str
     ) -> list[str]:
         events: list[str] = []
-        if state.active_block != "text":
+        if state.active_block != ContentBlockType.TEXT:
             events.extend(self._close_open_blocks_inner(state))
             idx = state.next_content_index()
-            state.active_block = "text"
+            state.active_block = ContentBlockType.TEXT
             state.active_block_index = idx
             events.append(
                 _emit(
-                    ChatContentStartEvent(
+                    ContentStartEvent(
                         index=idx,
                         delta={
                             "message": {
-                                "content": {"type": "text", "text": ""}
+                                "content": {
+                                    "type": ContentBlockType.TEXT,
+                                    "text": "",
+                                }
                             }
                         },
-                    ),
-                    "content-start",
+                    )
                 )
             )
         events.append(
             _emit(
-                ChatContentDeltaEvent(
+                ContentDeltaEvent(
                     index=state.active_block_index,
                     delta={"message": {"content": {"text": delta_text}}},
-                ),
-                "content-delta",
+                )
             )
         )
         return events
@@ -838,10 +857,10 @@ class CohereServingChatV2(OpenAIServingChat):
                 events.extend(self._close_open_blocks_inner(state))
                 state.tool_calls_seen.add(tc_index)
                 state.active_tool_index = tc_index
-                state.active_block = "tool_call"
+                state.active_block = ContentBlockType.TOOL_CALL
                 events.append(
                     _emit(
-                        ChatToolCallStartEvent(
+                        ToolCallStartEvent(
                             index=tc_index,
                             delta={
                                 "message": {
@@ -859,8 +878,7 @@ class CohereServingChatV2(OpenAIServingChat):
                                     }
                                 }
                             },
-                        ),
-                        "tool-call-start",
+                        )
                     )
                 )
                 continue
@@ -868,7 +886,7 @@ class CohereServingChatV2(OpenAIServingChat):
             if fn and fn.arguments:
                 events.append(
                     _emit(
-                        ChatToolCallDeltaEvent(
+                        ToolCallDeltaEvent(
                             index=tc_index,
                             delta={
                                 "message": {
@@ -879,8 +897,7 @@ class CohereServingChatV2(OpenAIServingChat):
                                     }
                                 }
                             },
-                        ),
-                        "tool-call-delta",
+                        )
                     )
                 )
         return events
@@ -916,16 +933,10 @@ class CohereServingChatV2(OpenAIServingChat):
                         delta={"message": {"citations": citation.model_dump(
                             exclude_none=True
                         )}},
-                    ),
-                    "citation-start",
+                    )
                 )
             )
-            events.append(
-                _emit(
-                    CitationEndEvent(index=idx),
-                    "citation-end",
-                )
-            )
+            events.append(_emit(CitationEndEvent(index=idx)))
         return events
 
     # -- block lifecycle helpers --------------------------------------
@@ -935,19 +946,13 @@ class CohereServingChatV2(OpenAIServingChat):
 
     def _close_open_blocks_inner(self, state: _StreamState) -> list[str]:
         events: list[str] = []
-        if state.active_block in ("text", "thinking"):
+        if state.active_block in (ContentBlockType.TEXT, ContentBlockType.THINKING):
             events.append(
-                _emit(
-                    ChatContentEndEvent(index=state.active_block_index),
-                    "content-end",
-                )
+                _emit(ContentEndEvent(index=state.active_block_index))
             )
-        elif state.active_block == "tool_call":
+        elif state.active_block == ContentBlockType.TOOL_CALL:
             events.append(
-                _emit(
-                    ChatToolCallEndEvent(index=state.active_tool_index),
-                    "tool-call-end",
-                )
+                _emit(ToolCallEndEvent(index=state.active_tool_index))
             )
         state.active_block = None
         state.active_block_index = None
@@ -976,10 +981,7 @@ class CohereServingChatV2(OpenAIServingChat):
                     "output_tokens": completion,
                 },
             }
-        return _emit(
-            ChatMessageEndEvent(id=chunk_id, delta=delta),
-            "message-end",
-        )
+        return _emit(MessageEndEvent(id=chunk_id, delta=delta))
 
     # ==================================================================
     # Helpers for the router
@@ -1010,7 +1012,7 @@ class _StreamState:
     def __init__(self) -> None:
         self.started: bool = False
         self.finish_reason: str | None = None
-        self.active_block: str | None = None  # "text" | "thinking" | "tool_call"
+        self.active_block: ContentBlockType | None = None
         self.active_block_index: int | None = None
         self.active_tool_index: int | None = None
         self._next_index: int = 0
