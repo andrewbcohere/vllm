@@ -61,7 +61,16 @@ async def init_generate_state(
 ):
     from vllm.entrypoints.anthropic.serving import AnthropicServingMessages
     from vllm.entrypoints.chat_utils import load_chat_template
-    from vllm.entrypoints.cohere.serving import CohereServingChatV2
+
+    try:
+        from vllm.entrypoints.cohere.serving import CohereServingChatV2
+    except ImportError:
+        # The Cohere serving handler depends on the optional `cohere` SDK
+        # for its wire-format protocol models. When it isn't installed,
+        # `register_cohere_api_router` already skips registering the route,
+        # so we simply leave `cohere_serving_chat_v2` unset.
+        CohereServingChatV2 = None  # type: ignore[assignment,misc]
+
     from vllm.entrypoints.mcp.tool_server import (
         DemoToolServer,
         MCPToolServer,
@@ -199,7 +208,7 @@ async def init_generate_state(
             enable_force_include_usage=args.enable_force_include_usage,
             default_chat_template_kwargs=args.default_chat_template_kwargs,
         )
-        if "generate" in supported_tasks
+        if CohereServingChatV2 is not None and "generate" in supported_tasks
         else None
     )
     state.serving_tokens = (

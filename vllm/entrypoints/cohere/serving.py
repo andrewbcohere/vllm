@@ -27,38 +27,37 @@ import time
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any
 
+from cohere.types import (
+    AssistantChatMessageV2,
+    AssistantMessageResponse,
+    ChatContentDeltaEvent,
+    ChatContentEndEvent,
+    ChatContentStartEvent,
+    ChatMessageEndEvent,
+    ChatMessageStartEvent,
+    ChatToolCallDeltaEvent,
+    ChatToolCallEndEvent,
+    ChatToolCallStartEvent,
+    Citation,
+    CitationEndEvent,
+    CitationStartEvent,
+    SystemChatMessageV2,
+    ToolCallV2,
+    ToolCallV2Function,
+    ToolChatMessageV2,
+    UserChatMessageV2,
+)
 from fastapi import Request
 
 from vllm.engine.protocol import EngineClient
 from vllm.entrypoints.chat_utils import ChatTemplateContentFormatOption
 from vllm.entrypoints.cohere.protocol import (
-    CohereAssistantMessageResponse,
-    CohereAssistantMessageV2,
-    CohereChatContentDeltaEvent,
-    CohereChatContentEndEvent,
-    CohereChatContentStartEvent,
-    CohereChatMessageEndEvent,
-    CohereChatMessageStartEvent,
-    CohereChatToolCallDeltaEvent,
-    CohereChatToolCallEndEvent,
-    CohereChatToolCallStartEvent,
     CohereChatV2Request,
     CohereChatV2Response,
-    CohereCitation,
-    CohereCitationEndEvent,
-    CohereCitationStartEvent,
-    CohereDocumentContent,
     CohereFinishReason,
-    CohereSystemMessageV2,
-    CohereTextContent,
-    CohereThinkingContent,
-    CohereToolCallFunction,
-    CohereToolCallV2,
-    CohereToolMessageV2,
     CohereUsage,
     CohereUsageBilledUnits,
     CohereUsageTokens,
-    CohereUserMessageV2,
 )
 from vllm.entrypoints.logger import RequestLogger
 from vllm.entrypoints.openai.chat_completion.protocol import (
@@ -94,6 +93,21 @@ def _sse(data: str) -> str:
     JSON object's ``type`` field carries the event discriminator.
     """
     return f"data: {data}\n\n"
+
+
+def _emit(event: Any, type_str: str) -> str:
+    """Serialize an SDK stream event with the wire-format ``type`` field.
+
+    The cohere SDK's stream-event Pydantic models (``ChatMessageStartEvent``
+    etc.) don't declare ``type`` as a field -- the SDK handles type
+    discrimination in its own deserializer -- so a vanilla
+    ``model_dump_json()`` would drop the discriminator and break clients
+    that demux on ``type``. We dump the event, splice ``type`` back in,
+    and re-serialize as JSON before wrapping in an SSE frame.
+    """
+    payload = event.model_dump(exclude_none=True)
+    payload["type"] = type_str
+    return _sse(json.dumps(payload))
 
 
 # Mapping of vLLM/OpenAI finish reasons to Cohere's enum.
@@ -220,18 +234,18 @@ class CohereServingChatV2(OpenAIServingChat):
         openai_messages: list[dict[str, Any]],
     ) -> None:
         for msg in messages:
-            if isinstance(msg, CohereSystemMessageV2):
+            if isinstance(msg, SystemChatMessageV2):
                 openai_messages.append(
                     {
                         "role": "system",
                         "content": cls._coerce_text_content(msg.content),
                     }
                 )
-            elif isinstance(msg, CohereUserMessageV2):
+            elif isinstance(msg, UserChatMessageV2):
                 openai_messages.append(cls._convert_user_message(msg))
-            elif isinstance(msg, CohereAssistantMessageV2):
+            elif isinstance(msg, AssistantChatMessageV2):
                 openai_messages.append(cls._convert_assistant_message(msg))
-            elif isinstance(msg, CohereToolMessageV2):
+            elif isinstance(msg, ToolChatMessageV2):
                 openai_messages.append(cls._convert_tool_message(msg))
             else:  # pragma: no cover - guarded by Pydantic discriminator
                 raise ValueError(f"Unsupported Cohere v2 message: {msg!r}")
@@ -249,18 +263,22 @@ class CohereServingChatV2(OpenAIServingChat):
 
     @classmethod
     def _convert_user_message(
-        cls, msg: CohereUserMessageV2
+        cls, msg: UserChatMessageV2
     ) -> dict[str, Any]:
         if isinstance(msg.content, str):
             return {"role": "user", "content": msg.content}
 
+        # Discriminate by ``type`` rather than isinstance so we don't have
+        # to import every individual ``*Content`` variant from the SDK -
+        # the union (``UserMessageV2Content``) covers both ``TextContent``
+        # and ``ImageUrlContent`` and both expose ``type`` as a Literal.
         content_parts: list[dict[str, Any]] = []
         for block in msg.content:
-            if isinstance(block, CohereTextContent):
+            if block.type == "text":
                 content_parts.append({"type": "text", "text": block.text})
-            else:  # CohereImageContent
+            elif block.type == "image_url":
                 image_url: dict[str, Any] = {"url": block.image_url.url}
-                if block.image_url.detail is not None:
+                if getattr(block.image_url, "detail", None) is not None:
                     image_url["detail"] = block.image_url.detail
                 content_parts.append(
                     {
@@ -277,7 +295,7 @@ class CohereServingChatV2(OpenAIServingChat):
 
     @classmethod
     def _convert_assistant_message(
-        cls, msg: CohereAssistantMessageV2
+        cls, msg: AssistantChatMessageV2
     ) -> dict[str, Any]:
         out: dict[str, Any] = {"role": "assistant"}
 
@@ -290,9 +308,9 @@ class CohereServingChatV2(OpenAIServingChat):
             text_parts.append(msg.content)
         elif msg.content is not None:
             for block in msg.content:
-                if isinstance(block, CohereTextContent):
+                if block.type == "text":
                     text_parts.append(block.text)
-                elif isinstance(block, CohereThinkingContent):
+                elif block.type == "thinking":
                     thinking_parts.append(block.thinking)
 
         # ``tool_plan`` is Cohere's chain-of-thought emitted alongside tool
@@ -325,7 +343,7 @@ class CohereServingChatV2(OpenAIServingChat):
 
     @classmethod
     def _convert_tool_message(
-        cls, msg: CohereToolMessageV2
+        cls, msg: ToolChatMessageV2
     ) -> dict[str, Any]:
         if isinstance(msg.content, str):
             return {
@@ -342,14 +360,15 @@ class CohereServingChatV2(OpenAIServingChat):
         # {...}}`` blocks). Non-cohere renderers may not honor document
         # blocks, but that matches the broader "documents are no-op for OSS
         # models" contract documented on this endpoint.
-        has_documents = any(
-            isinstance(block, CohereDocumentContent) for block in msg.content
-        )
+        #
+        # Tool message content uses ``ToolMessageV2Content``, which is a
+        # union of ``TextToolContent`` and ``DocumentToolContent`` -
+        # distinct from the user-message text/image union. We discriminate
+        # on the ``type`` literal so we don't have to import each variant.
+        has_documents = any(block.type == "document" for block in msg.content)
         if not has_documents:
             text = "\n".join(
-                block.text
-                for block in msg.content
-                if isinstance(block, CohereTextContent)
+                block.text for block in msg.content if block.type == "text"
             )
             return {
                 "role": "tool",
@@ -359,9 +378,9 @@ class CohereServingChatV2(OpenAIServingChat):
 
         parts: list[dict[str, Any]] = []
         for block in msg.content:
-            if isinstance(block, CohereTextContent):
+            if block.type == "text":
                 parts.append({"type": "text", "text": block.text})
-            else:  # CohereDocumentContent
+            elif block.type == "document":
                 parts.append(
                     {
                         "type": "document",
@@ -538,18 +557,21 @@ class CohereServingChatV2(OpenAIServingChat):
         choice = response.choices[0]
         msg = choice.message
 
-        content_blocks: list[Any] = []
+        # Build content blocks as dicts; ``AssistantMessageResponse``
+        # validates them into the proper discriminated union variants
+        # (``Text/ThinkingAssistantMessageResponseContentItem``).
+        content_blocks: list[dict[str, Any]] = []
         if msg.reasoning:
-            content_blocks.append(CohereThinkingContent(thinking=msg.reasoning))
+            content_blocks.append({"type": "thinking", "thinking": msg.reasoning})
         if msg.content:
-            content_blocks.append(CohereTextContent(text=msg.content))
+            content_blocks.append({"type": "text", "text": msg.content})
 
-        tool_calls: list[CohereToolCallV2] | None = None
+        tool_calls: list[ToolCallV2] | None = None
         if msg.tool_calls:
             tool_calls = [
-                CohereToolCallV2(
+                ToolCallV2(
                     id=tc.id,
-                    function=CohereToolCallFunction(
+                    function=ToolCallV2Function(
                         name=tc.function.name,
                         arguments=tc.function.arguments,
                     ),
@@ -565,12 +587,10 @@ class CohereServingChatV2(OpenAIServingChat):
         if tool_calls and msg.reasoning:
             tool_plan = msg.reasoning
             content_blocks = [
-                blk
-                for blk in content_blocks
-                if not isinstance(blk, CohereThinkingContent)
+                blk for blk in content_blocks if blk.get("type") != "thinking"
             ]
 
-        assistant_msg = CohereAssistantMessageResponse(
+        assistant_msg = AssistantMessageResponse(
             content=content_blocks or None,
             tool_calls=tool_calls,
             tool_plan=tool_plan,
@@ -588,28 +608,31 @@ class CohereServingChatV2(OpenAIServingChat):
         )
 
     @staticmethod
-    def _extract_citations_if_any(msg: Any) -> list[CohereCitation] | None:
+    def _extract_citations_if_any(msg: Any) -> list[Citation] | None:
         """Coerce ``ChatMessage.citations`` into the Cohere v2 wire shape.
 
         ``ChatMessage`` natively carries a ``citations: list[Citation] |
         None`` field (see :mod:`vllm.entrypoints.openai.engine.protocol`).
         Renderers/parsers (e.g. the ``cohere2`` reasoning parser) populate
-        it. We map each :class:`vllm...Citation` into the
-        :class:`CohereCitation` wire model, preserving sources and span.
+        it. We map each :class:`vllm...Citation` into the SDK
+        :class:`cohere.types.Citation` wire model, preserving sources and
+        span.
         """
         raw = getattr(msg, "citations", None)
         if not raw:
             return None
-        out: list[CohereCitation] = []
+        out: list[Citation] = []
         for c in raw:
             try:
-                if isinstance(c, CohereCitation):
+                if isinstance(c, Citation):
                     out.append(c)
                     continue
                 if hasattr(c, "model_dump"):
-                    c = c.model_dump(exclude_none=True)
-                if isinstance(c, dict):
-                    out.append(CohereCitation.model_validate(c))
+                    payload = c.model_dump(exclude_none=True)
+                else:
+                    payload = c
+                if isinstance(payload, dict):
+                    out.append(Citation.model_validate(payload))
             except Exception:  # pragma: no cover - defensive
                 logger.debug("Skipping malformed citation: %r", c, exc_info=True)
         return out or None
@@ -668,11 +691,12 @@ class CohereServingChatV2(OpenAIServingChat):
                 chunk = ChatCompletionStreamResponse.model_validate_json(data_str)
 
                 if not state.started:
-                    yield _sse(
-                        CohereChatMessageStartEvent(
+                    yield _emit(
+                        ChatMessageStartEvent(
                             id=chunk.id,
                             delta={"message": {"role": "assistant"}},
-                        ).model_dump_json(exclude_none=True)
+                        ),
+                        "message-start",
                     )
                     state.started = True
 
@@ -680,12 +704,10 @@ class CohereServingChatV2(OpenAIServingChat):
                 if not chunk.choices:
                     for ev in self._close_open_blocks(state):
                         yield ev
-                    yield _sse(
-                        self._build_message_end_event(
-                            chunk_id=chunk.id,
-                            finish_reason=state.finish_reason,
-                            usage_chunk=chunk,
-                        )
+                    yield self._build_message_end_event(
+                        chunk_id=chunk.id,
+                        finish_reason=state.finish_reason,
+                        usage_chunk=chunk,
                     )
                     continue
 
@@ -744,25 +766,27 @@ class CohereServingChatV2(OpenAIServingChat):
             state.active_block = "thinking"
             state.active_block_index = idx
             events.append(
-                _sse(
-                    CohereChatContentStartEvent(
+                _emit(
+                    ChatContentStartEvent(
                         index=idx,
                         delta={
                             "message": {
                                 "content": {"type": "thinking", "thinking": ""}
                             }
                         },
-                    ).model_dump_json(exclude_none=True)
+                    ),
+                    "content-start",
                 )
             )
         events.append(
-            _sse(
-                CohereChatContentDeltaEvent(
+            _emit(
+                ChatContentDeltaEvent(
                     index=state.active_block_index,
                     delta={
                         "message": {"content": {"thinking": delta_text}}
                     },
-                ).model_dump_json(exclude_none=True)
+                ),
+                "content-delta",
             )
         )
         return events
@@ -777,23 +801,25 @@ class CohereServingChatV2(OpenAIServingChat):
             state.active_block = "text"
             state.active_block_index = idx
             events.append(
-                _sse(
-                    CohereChatContentStartEvent(
+                _emit(
+                    ChatContentStartEvent(
                         index=idx,
                         delta={
                             "message": {
                                 "content": {"type": "text", "text": ""}
                             }
                         },
-                    ).model_dump_json(exclude_none=True)
+                    ),
+                    "content-start",
                 )
             )
         events.append(
-            _sse(
-                CohereChatContentDeltaEvent(
+            _emit(
+                ChatContentDeltaEvent(
                     index=state.active_block_index,
                     delta={"message": {"content": {"text": delta_text}}},
-                ).model_dump_json(exclude_none=True)
+                ),
+                "content-delta",
             )
         )
         return events
@@ -814,8 +840,8 @@ class CohereServingChatV2(OpenAIServingChat):
                 state.active_tool_index = tc_index
                 state.active_block = "tool_call"
                 events.append(
-                    _sse(
-                        CohereChatToolCallStartEvent(
+                    _emit(
+                        ChatToolCallStartEvent(
                             index=tc_index,
                             delta={
                                 "message": {
@@ -833,15 +859,16 @@ class CohereServingChatV2(OpenAIServingChat):
                                     }
                                 }
                             },
-                        ).model_dump_json(exclude_none=True)
+                        ),
+                        "tool-call-start",
                     )
                 )
                 continue
 
             if fn and fn.arguments:
                 events.append(
-                    _sse(
-                        CohereChatToolCallDeltaEvent(
+                    _emit(
+                        ChatToolCallDeltaEvent(
                             index=tc_index,
                             delta={
                                 "message": {
@@ -852,7 +879,8 @@ class CohereServingChatV2(OpenAIServingChat):
                                     }
                                 }
                             },
-                        ).model_dump_json(exclude_none=True)
+                        ),
+                        "tool-call-delta",
                     )
                 )
         return events
@@ -876,26 +904,26 @@ class CohereServingChatV2(OpenAIServingChat):
             if not isinstance(payload, dict):
                 continue
             try:
-                citation = CohereCitation.model_validate(payload)
+                citation = Citation.model_validate(payload)
             except Exception:  # pragma: no cover - defensive
                 logger.debug("Skipping malformed streamed citation: %r", payload)
                 continue
             idx = state.next_citation_index()
             events.append(
-                _sse(
-                    CohereCitationStartEvent(
+                _emit(
+                    CitationStartEvent(
                         index=idx,
                         delta={"message": {"citations": citation.model_dump(
                             exclude_none=True
                         )}},
-                    ).model_dump_json(exclude_none=True)
+                    ),
+                    "citation-start",
                 )
             )
             events.append(
-                _sse(
-                    CohereCitationEndEvent(index=idx).model_dump_json(
-                        exclude_none=True
-                    )
+                _emit(
+                    CitationEndEvent(index=idx),
+                    "citation-end",
                 )
             )
         return events
@@ -909,18 +937,16 @@ class CohereServingChatV2(OpenAIServingChat):
         events: list[str] = []
         if state.active_block in ("text", "thinking"):
             events.append(
-                _sse(
-                    CohereChatContentEndEvent(
-                        index=state.active_block_index,
-                    ).model_dump_json(exclude_none=True)
+                _emit(
+                    ChatContentEndEvent(index=state.active_block_index),
+                    "content-end",
                 )
             )
         elif state.active_block == "tool_call":
             events.append(
-                _sse(
-                    CohereChatToolCallEndEvent(
-                        index=state.active_tool_index,
-                    ).model_dump_json(exclude_none=True)
+                _emit(
+                    ChatToolCallEndEvent(index=state.active_tool_index),
+                    "tool-call-end",
                 )
             )
         state.active_block = None
@@ -950,9 +976,10 @@ class CohereServingChatV2(OpenAIServingChat):
                     "output_tokens": completion,
                 },
             }
-        return CohereChatMessageEndEvent(
-            id=chunk_id, delta=delta
-        ).model_dump_json(exclude_none=True)
+        return _emit(
+            ChatMessageEndEvent(id=chunk_id, delta=delta),
+            "message-end",
+        )
 
     # ==================================================================
     # Helpers for the router
