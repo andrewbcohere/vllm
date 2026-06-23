@@ -60,6 +60,7 @@ from vllm.entrypoints.cohere.protocol import (
     ToolCallDeltaEvent,
     ToolCallEndEvent,
     ToolCallStartEvent,
+    ToolPlanDeltaEvent,
 )
 from vllm.entrypoints.logger import RequestLogger
 from vllm.entrypoints.openai.chat_completion.protocol import (
@@ -172,6 +173,7 @@ class CohereServingChatV2(OpenAIServingChat):
         enable_prompt_tokens_details: bool = False,
         enable_force_include_usage: bool = False,
         default_chat_template_kwargs: dict[str, Any] | None = None,
+        surface_reasoning_as_tool_plan: bool = False,
     ) -> None:
         super().__init__(
             engine_client=engine_client,
@@ -189,6 +191,19 @@ class CohereServingChatV2(OpenAIServingChat):
             enable_force_include_usage=enable_force_include_usage,
             default_chat_template_kwargs=default_chat_template_kwargs,
         )
+        # When True, the assistant's reasoning text is surfaced as Cohere's
+        # ``tool_plan`` (non-streaming) or as ``tool-plan-delta`` events
+        # (streaming) whenever the model emits tool calls. This matches the
+        # behavior of older non-reasoning Command models, which produce a
+        # tool plan in place of a thinking block.
+        #
+        # When False (default), reasoning is always surfaced as a thinking
+        # content block; this matches reasoning Command models that
+        # emit both a thinking block and tool calls.
+        #
+        # TODO: replace this manual flag with automatic detection based on
+        # the model's capabilities once we have that config
+        self._surface_reasoning_as_tool_plan = surface_reasoning_as_tool_plan
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -596,11 +611,17 @@ class CohereServingChatV2(OpenAIServingChat):
             ]
 
         # Cohere's ``tool_plan`` is the planning text emitted before tool
-        # calls. The closest analogue in chat completions is the reasoning
-        # field; if a tool call is present, surface reasoning as tool_plan
-        # rather than as a thinking content block to match Cohere clients.
+        # calls on older, non-reasoning Command models. For those models we
+        # surface ``reasoning`` as ``tool_plan`` and drop the thinking
+        # block. Reasoning Command models emit a regular thinking
+        # block alongside tool calls, so the default leaves the thinking
+        # block in place and never sets ``tool_plan``.
         tool_plan: str | None = None
-        if tool_calls and msg.reasoning:
+        if (
+            self._surface_reasoning_as_tool_plan
+            and tool_calls
+            and msg.reasoning
+        ):
             tool_plan = msg.reasoning
             content_blocks = [
                 blk
@@ -776,7 +797,22 @@ class CohereServingChatV2(OpenAIServingChat):
     def _handle_thinking_delta(
         self, state: _StreamState, delta_text: str
     ) -> list[str]:
-        events: list[str] = []
+        # Non-reasoning Command models: emit ``tool-plan-delta`` events
+        # directly instead of opening a thinking content block. The
+        # ``tool-plan-delta`` event has no start/end pair around it.
+        if self._surface_reasoning_as_tool_plan:
+            events: list[str] = list(self._close_open_blocks_inner(state))
+            events.append(
+                _emit(
+                    ToolPlanDeltaEvent(
+                        delta={"message": {"tool_plan": delta_text}},
+                    )
+                )
+            )
+            return events
+
+        # Reasoning model (default): open / continue a thinking block.
+        events = []
         if state.active_block != ContentBlockType.THINKING:
             events.extend(self._close_open_blocks_inner(state))
             idx = state.next_content_index()
