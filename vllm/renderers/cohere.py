@@ -283,11 +283,11 @@ def _build_render_config(
     }
 
     # Optional template overrides
-    for k in ("template_id", "template", "template_jinja"):
+    for k in ("template_id", "template_jinja"):
         if v := chat_template_kwargs.get(k):
             config[k] = v
-    if (use_jinja := chat_template_kwargs.get("use_jinja")) is not None:
-        config["use_jinja"] = bool(use_jinja)
+    # Only support Jinja with vllm
+    config["use_jinja"] = True
 
     # Documents
     documents = chat_template_kwargs.get("documents") or []
@@ -313,14 +313,10 @@ def _build_render_config(
         if t in ("enabled", "disabled"):
             config["reasoning_type"] = t
 
-    if (rp := chat_template_kwargs.get("response_prefix")) is not None:
-        config["response_prefix"] = str(rp)
     if (di := chat_template_kwargs.get("dev_instruction")) is not None:
         config["dev_instruction"] = str(di)
     if (extra := chat_template_kwargs.get("additional_template_fields")):
         config["additional_template_fields"] = dict(extra)
-    if (esc := chat_template_kwargs.get("escaped_special_tokens")):
-        config["escaped_special_tokens"] = dict(esc)
 
     # JSON / structured outputs
     if (rf := chat_template_kwargs.get("response_format")) is not None:

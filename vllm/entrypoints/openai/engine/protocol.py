@@ -375,9 +375,10 @@ class Citation(OpenAIBaseModel):
     content_index: int | None = None
     """Index of the content block this citation refers to (when the message
     has multiple content blocks)."""
-    type: Literal["TEXT_CONTENT", "PLAN"] | None = None
-    """Whether this citation grounds the user-visible text or a planning
-    block. ``None`` means unspecified."""
+    type: Literal["TEXT_CONTENT", "THINKING_CONTENT", "PLAN"] | None = None
+    """Which kind of content block this citation grounds: the user-visible
+    text (``TEXT_CONTENT``), a thinking block (``THINKING_CONTENT``), or a
+    tool-plan block (``PLAN``). ``None`` means unspecified."""
 
 
 class DeltaMessage(OpenAIBaseModel):
