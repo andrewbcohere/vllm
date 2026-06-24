@@ -24,7 +24,6 @@ See https://docs.cohere.com/reference/chat for the upstream spec.
 """
 from __future__ import annotations
 
-import time
 from typing import Any, Literal
 
 from cohere import types as _sdk
@@ -192,8 +191,8 @@ class CohereChatV2Request(BaseModel):
     @field_validator("max_tokens")
     @classmethod
     def _validate_max_tokens(cls, v: int | None) -> int | None:
-        if v is not None and v <= 0:
-            raise ValueError("max_tokens must be positive")
+        if v is not None and v < 0:
+            raise ValueError("max_tokens must be non-negative")
         return v
 
 
@@ -240,7 +239,10 @@ class CohereChatV2Response(BaseModel):
 
     Wraps the SDK :class:`AssistantMessageResponse` (the message shape) in
     the documented v2 response envelope (``id``, ``finish_reason``,
-    ``usage``, ``logprobs``).
+    ``usage``, ``logprobs``). The single constructor in
+    :class:`CohereServingChatV2._chat_completion_to_v2` is responsible for
+    supplying a non-empty ``id`` (falling back to a synthesized one if
+    the upstream response is missing it) to this model.
     """
 
     id: str
@@ -253,10 +255,6 @@ class CohereChatV2Response(BaseModel):
     kv_transfer_params: dict[str, Any] | None = Field(
         default=None, description="KVTransfer parameters."
     )
-
-    def model_post_init(self, __context: Any) -> None:
-        if not self.id:
-            self.id = f"chat_{int(time.time() * 1000)}"
 
 
 # ---------------------------------------------------------------------------
