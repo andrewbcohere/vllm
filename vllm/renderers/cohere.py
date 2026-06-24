@@ -58,35 +58,6 @@ logger = init_logger(__name__)
 _DEFAULT_FORMAT = "cmd3"
 _VALID_FORMATS = ("cmd3", "cmd4")
 
-# Keys consumed by this renderer that should not also be forwarded to the
-# `apply_chat_template` path of the underlying tokenizer.
-_RENDERER_CONSUMED_KEYS = frozenset(
-    {
-        "cohere_format",
-        "documents",
-        "available_tools",
-        "tools",
-        "safety_mode",
-        "citation_quality",
-        "citation_options",
-        "grounding",
-        "reasoning_type",
-        "response_prefix",
-        "json_schema",
-        "json_mode",
-        "response_format",
-        "skip_preamble",
-        "dev_instruction",
-        "platform_instruction",
-        "template",
-        "template_id",
-        "template_jinja",
-        "use_jinja",
-        "additional_template_fields",
-        "escaped_special_tokens",
-    }
-)
-
 
 def _try_import_melody():
     try:

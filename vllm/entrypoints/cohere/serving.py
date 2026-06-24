@@ -801,7 +801,7 @@ class CohereServingChatV2(OpenAIServingChat):
         # directly instead of opening a thinking content block. The
         # ``tool-plan-delta`` event has no start/end pair around it.
         if self._surface_reasoning_as_tool_plan:
-            events: list[str] = list(self._close_open_blocks_inner(state))
+            events: list[str] = list(self._close_open_blocks(state))
             events.append(
                 _emit(
                     ToolPlanDeltaEvent(
@@ -814,7 +814,7 @@ class CohereServingChatV2(OpenAIServingChat):
         # Reasoning model (default): open / continue a thinking block.
         events = []
         if state.active_block != ContentBlockType.THINKING:
-            events.extend(self._close_open_blocks_inner(state))
+            events.extend(self._close_open_blocks(state))
             idx = state.next_content_index()
             state.active_block = ContentBlockType.THINKING
             state.active_block_index = idx
@@ -850,7 +850,7 @@ class CohereServingChatV2(OpenAIServingChat):
     ) -> list[str]:
         events: list[str] = []
         if state.active_block != ContentBlockType.TEXT:
-            events.extend(self._close_open_blocks_inner(state))
+            events.extend(self._close_open_blocks(state))
             idx = state.next_content_index()
             state.active_block = ContentBlockType.TEXT
             state.active_block_index = idx
@@ -890,7 +890,7 @@ class CohereServingChatV2(OpenAIServingChat):
 
             if tool_id is not None and tc_index not in state.tool_calls_seen:
                 # New tool call. Close any open content/tool block first.
-                events.extend(self._close_open_blocks_inner(state))
+                events.extend(self._close_open_blocks(state))
                 state.tool_calls_seen.add(tc_index)
                 state.active_tool_index = tc_index
                 state.active_block = ContentBlockType.TOOL_CALL
@@ -978,9 +978,9 @@ class CohereServingChatV2(OpenAIServingChat):
     # -- block lifecycle helpers --------------------------------------
 
     def _close_open_blocks(self, state: _StreamState) -> list[str]:
-        return self._close_open_blocks_inner(state)
-
-    def _close_open_blocks_inner(self, state: _StreamState) -> list[str]:
+        """Emit ``content-end`` / ``tool-call-end`` for the currently open
+        block (if any) and reset the corresponding ``_StreamState`` slots.
+        """
         events: list[str] = []
         if state.active_block in (ContentBlockType.TEXT, ContentBlockType.THINKING):
             events.append(
