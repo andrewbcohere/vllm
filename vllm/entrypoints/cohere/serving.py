@@ -885,10 +885,9 @@ class CohereServingChatV2(OpenAIServingChat):
         events: list[str] = []
         for tc in deltas:
             tc_index = tc.index
-            tool_id = tc.id
             fn = tc.function
 
-            if tool_id is not None and tc_index not in state.tool_calls_seen:
+            if tc_index not in state.tool_calls_seen:
                 # New tool call. Close any open content/tool block first.
                 events.extend(self._close_open_blocks(state))
                 state.tool_calls_seen.add(tc_index)
@@ -901,7 +900,7 @@ class CohereServingChatV2(OpenAIServingChat):
                             delta={
                                 "message": {
                                     "tool_calls": {
-                                        "id": tool_id,
+                                        "id": tc.id or "",
                                         "type": "function",
                                         "function": {
                                             "name": (fn.name if fn else "")
