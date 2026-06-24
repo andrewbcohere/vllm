@@ -98,6 +98,14 @@ def _sse(data: str) -> str:
     return f"data: {data}\n\n"
 
 
+# Cohere v2 SSE stream terminator. Declared by the upstream OpenAPI spec
+# (``x-fern-streaming.terminator: "[DONE]"`` on the ``/v2/chat`` stream
+# operation) and observed by the cohere-python / Fern-generated clients
+# (the Python SDK breaks its read loop on ``_sse.data == "[DONE]"``).
+# Must be emitted after the closing ``message-end`` event.
+_DONE_FRAME = _sse("[DONE]")
+
+
 def _emit(event: BaseModel) -> str:
     """Serialize a typed stream event into an SSE frame.
 
@@ -727,11 +735,13 @@ class CohereServingChatV2(OpenAIServingChat):
                 if not data_str:
                     continue
                 if data_str == "[DONE]":
-                    # Cohere closes the stream with message-end (already
-                    # emitted on the final usage chunk); nothing to do.
-                    return
+                    # OpenAI's stream terminator. Fall through to the
+                    # post-loop cleanup so we always emit ``message-end``
+                    # even if the usage-only chunk was skipped.
+                    break
 
                 chunk = ChatCompletionStreamResponse.model_validate_json(data_str)
+                state.last_chunk_id = chunk.id
 
                 if not state.started:
                     yield _emit(
@@ -751,6 +761,7 @@ class CohereServingChatV2(OpenAIServingChat):
                         finish_reason=state.finish_reason,
                         usage_chunk=chunk,
                     )
+                    state.ended = True
                     continue
 
                 choice = chunk.choices[0]
@@ -787,14 +798,42 @@ class CohereServingChatV2(OpenAIServingChat):
 
         except Exception as exc:
             logger.exception("Error converting chat completion stream to v2")
-            yield _sse(
-                json.dumps(
-                    {
-                        "type": "message-end",
-                        "delta": {"error": str(exc), "finish_reason": "ERROR"},
-                    }
+            if state.started and not state.ended:
+                yield _sse(
+                    json.dumps(
+                        {
+                            "type": "message-end",
+                            "delta": {
+                                "error": str(exc),
+                                "finish_reason": "ERROR",
+                            },
+                        }
+                    )
                 )
+                state.ended = True
+            yield _DONE_FRAME
+            return
+
+        # Normal completion or ``[DONE]``: ensure ``message-end`` is always
+        # emitted. Upstream may close the stream without sending the final
+        # usage-only chunk (e.g. on shutdown, or when ``[DONE]`` is the only
+        # terminator); without this fallback Cohere clients would hang
+        # waiting for the closing event.
+        if state.started and not state.ended:
+            for ev in self._close_open_blocks(state):
+                yield ev
+            yield self._build_message_end_event(
+                chunk_id=state.last_chunk_id,
+                finish_reason=state.finish_reason,
+                usage_chunk=None,
             )
+            state.ended = True
+
+        # Stream terminator. Cohere's v2 SSE protocol ends every stream
+        # with ``data: [DONE]\n\n`` after ``message-end``; Fern-generated
+        # clients (Go/Java) and cohere-python all key their read loop off
+        # this sentinel.
+        yield _DONE_FRAME
 
     # -- per-delta helpers --------------------------------------------
 
@@ -1002,15 +1041,15 @@ class CohereServingChatV2(OpenAIServingChat):
         self,
         chunk_id: str,
         finish_reason: str | None,
-        usage_chunk: ChatCompletionStreamResponse,
+        usage_chunk: ChatCompletionStreamResponse | None = None,
     ) -> str:
         delta: dict[str, Any] = {
             "finish_reason": _map_finish_reason(finish_reason),
         }
-        if usage_chunk.usage is not None:
+        if usage_chunk is not None and usage_chunk.usage is not None:
             prompt = usage_chunk.usage.prompt_tokens
             completion = usage_chunk.usage.completion_tokens or 0
-            delta["usage"] = {
+            usage_block: dict[str, Any] = {
                 "billed_units": {
                     "input_tokens": prompt,
                     "output_tokens": completion,
@@ -1020,6 +1059,11 @@ class CohereServingChatV2(OpenAIServingChat):
                     "output_tokens": completion,
                 },
             }
+            if usage_chunk.usage.prompt_tokens_details is not None:
+                cached = usage_chunk.usage.prompt_tokens_details.cached_tokens
+                if cached is not None:
+                    usage_block["cached_tokens"] = cached
+            delta["usage"] = usage_block
         return _emit(MessageEndEvent(id=chunk_id, delta=delta))
 
     # ==================================================================
@@ -1050,7 +1094,9 @@ class _StreamState:
 
     def __init__(self) -> None:
         self.started: bool = False
+        self.ended: bool = False
         self.finish_reason: str | None = None
+        self.last_chunk_id: str = ""
         self.active_block: ContentBlockType | None = None
         self.active_block_index: int | None = None
         self.active_tool_index: int | None = None
