@@ -682,6 +682,9 @@ class CohereServingChatV2(OpenAIServingChat):
             return None
         prompt = response.usage.prompt_tokens
         completion = response.usage.completion_tokens or 0
+        cached: int | None = None
+        if response.usage.prompt_tokens_details is not None:
+            cached = response.usage.prompt_tokens_details.cached_tokens
         return CohereUsage(
             billed_units=CohereUsageBilledUnits(
                 input_tokens=prompt,
@@ -691,6 +694,7 @@ class CohereServingChatV2(OpenAIServingChat):
                 input_tokens=prompt,
                 output_tokens=completion,
             ),
+            cached_tokens=cached,
         )
 
     # ==================================================================
