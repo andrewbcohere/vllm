@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import copy
 import json
+from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
 from vllm.config import VllmConfig
@@ -65,6 +66,21 @@ logger = init_logger(__name__)
 
 _DEFAULT_FORMAT = "cmd3"
 _VALID_FORMATS = ("cmd3", "cmd4")
+
+
+class MelodyContentType(StrEnum):
+    """Wire-format discriminator for melody content blocks.
+
+    These strings are what the cmd3 / cmd4 Jinja templates check against
+    in ``message.content[0].type`` (e.g. the ``thinking`` branch in
+    ``cmd4-v1.jinja``). Keep new values in sync with melody's template
+    schema.
+    """
+
+    TEXT = "text"
+    THINKING = "thinking"
+    IMAGE = "image"
+    DOCUMENT = "document"
 
 # Keys this renderer interprets directly from ``chat_template_kwargs`` and
 # maps onto typed melody render-config fields. Everything *not* in this
@@ -160,25 +176,30 @@ def _content_blocks(content: Any) -> list[dict[str, Any]]:
     if content is None:
         return []
     if isinstance(content, str):
-        return [{"type": "text", "text": content}]
+        return [{"type": MelodyContentType.TEXT, "text": content}]
     blocks: list[dict[str, Any]] = []
     for part in content:
         if isinstance(part, str):
-            blocks.append({"type": "text", "text": part})
+            blocks.append({"type": MelodyContentType.TEXT, "text": part})
             continue
         if not isinstance(part, dict):
             raise TypeError(f"Unexpected content part: {part!r}")
-        part_type = part.get("type", "text")
+        part_type = part.get("type", MelodyContentType.TEXT)
         if part_type in ("text", "input_text", "output_text", "refusal"):
-            blocks.append({"type": "text", "text": part.get("text", "")})
-        elif part_type == "thinking":
             blocks.append(
-                {"type": "thinking", "thinking": part.get("thinking", "")}
+                {"type": MelodyContentType.TEXT, "text": part.get("text", "")}
             )
-        elif part_type == "image":
+        elif part_type == MelodyContentType.THINKING:
             blocks.append(
                 {
-                    "type": "image",
+                    "type": MelodyContentType.THINKING,
+                    "thinking": part.get("thinking", ""),
+                }
+            )
+        elif part_type == MelodyContentType.IMAGE:
+            blocks.append(
+                {
+                    "type": MelodyContentType.IMAGE,
                     "image": {
                         "template_placeholder": part.get(
                             "template_placeholder", "<image>"
@@ -186,24 +207,31 @@ def _content_blocks(content: Any) -> list[dict[str, Any]]:
                     },
                 }
             )
-        elif part_type == "document":
+        elif part_type == MelodyContentType.DOCUMENT:
             doc = part.get("document")
             if isinstance(doc, dict):
-                blocks.append({"type": "document", "document": doc})
+                blocks.append(
+                    {"type": MelodyContentType.DOCUMENT, "document": doc}
+                )
             else:
                 # Fall back to wrapping arbitrary string as text.
-                blocks.append({"type": "text", "text": json.dumps(doc)})
+                blocks.append(
+                    {"type": MelodyContentType.TEXT, "text": json.dumps(doc)}
+                )
         elif part_type == "tool_reference":
             # Tool references are rendered by name; emit as text so the
             # renderer downstream is content-format agnostic.
             blocks.append(
-                {"type": "text", "text": part.get("name") or part.get("text", "")}
+                {
+                    "type": MelodyContentType.TEXT,
+                    "text": part.get("name") or part.get("text", ""),
+                }
             )
         else:
             # Unknown block type: render as text fallback.
             text = part.get("text") or part.get(part_type) or ""
             text_str = text if isinstance(text, str) else json.dumps(text)
-            blocks.append({"type": "text", "text": text_str})
+            blocks.append({"type": MelodyContentType.TEXT, "text": text_str})
     return blocks
 
 
@@ -253,10 +281,21 @@ def _conversation_to_melody_messages(
         content_blocks = _content_blocks(msg.get("content"))
 
         # Treat reasoning content as a thinking block on assistant turns
-        # so multi-turn thinking is preserved in the rendered prompt.
+        # so multi-turn reasoning is preserved in the rendered prompt.
+        #
+        # Cohere models output thought as either a ``thinking``
+        # block (reasoning models) or a ``tool_plan`` field (older non-
+        # reasoning Command models), but vLLM's ConversationMessage has a
+        # single unified ``reasoning`` field that drops that difference.
+        # The cmd3 / cmd4 jinja templates render ``thinking`` blocks in both
+        # the case of tool calls and regular thinking blocks, so this is fine
+        # from the renderer's perspective.
         reasoning = msg.get("reasoning") or msg.get("reasoning_content")
         if role == "chatbot" and reasoning:
-            content_blocks.insert(0, {"type": "thinking", "thinking": reasoning})
+            content_blocks.insert(
+                0,
+                {"type": MelodyContentType.THINKING, "thinking": reasoning},
+            )
 
         tool_calls = [
             _normalize_tool_call(tc) for tc in (msg.get("tool_calls") or [])
