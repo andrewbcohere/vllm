@@ -181,7 +181,7 @@ class CohereServingChatV2(OpenAIServingChat):
         enable_prompt_tokens_details: bool = False,
         enable_force_include_usage: bool = False,
         default_chat_template_kwargs: dict[str, Any] | None = None,
-        surface_reasoning_as_tool_plan: bool = False,
+        is_reasoning_model: bool = True,
     ) -> None:
         super().__init__(
             engine_client=engine_client,
@@ -199,19 +199,24 @@ class CohereServingChatV2(OpenAIServingChat):
             enable_force_include_usage=enable_force_include_usage,
             default_chat_template_kwargs=default_chat_template_kwargs,
         )
-        # When True, the assistant's reasoning text is surfaced as Cohere's
-        # ``tool_plan`` (non-streaming) or as ``tool-plan-delta`` events
-        # (streaming) whenever the model emits tool calls. This matches the
-        # behavior of older non-reasoning Command models, which produce a
-        # tool plan in place of a thinking block.
+        # Controls how the assistant's chain-of-thought is surfaced on
+        # turns that also contain tool calls.
         #
-        # When False (default), reasoning is always surfaced as a thinking
-        # content block; this matches reasoning Command models that
-        # emit both a thinking block and tool calls.
+        # - ``True`` (default): the model is a reasoning Command-family
+        #   model; reasoning is always surfaced as a ``thinking`` content
+        #   block (non-streaming) or as ``content-start`` / ``content-
+        #   delta`` events for a thinking block (streaming), regardless of
+        #   whether tool calls also appear.
+        # - ``False``: the model is an older non-reasoning Command model
+        #   that uses Cohere's ``tool_plan`` field for its chain-of-
+        #   thought before tool calls; reasoning is surfaced as
+        #   ``tool_plan`` (non-streaming) or as ``tool-plan-delta`` events
+        #   (streaming) on tool-call turns, and the thinking content block
+        #   is dropped.
         #
-        # TODO: replace this manual flag with automatic detection based on
-        # the model's capabilities once we have that config
-        self._surface_reasoning_as_tool_plan = surface_reasoning_as_tool_plan
+        # TODO: replace this manual flag with automatic detection from the
+        # model's capabilities config once that exists.
+        self._is_reasoning_model = is_reasoning_model
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -619,17 +624,13 @@ class CohereServingChatV2(OpenAIServingChat):
             ]
 
         # Cohere's ``tool_plan`` is the planning text emitted before tool
-        # calls on older, non-reasoning Command models. For those models we
-        # surface ``reasoning`` as ``tool_plan`` and drop the thinking
-        # block. Reasoning Command models emit a regular thinking
-        # block alongside tool calls, so the default leaves the thinking
-        # block in place and never sets ``tool_plan``.
+        # calls on older, non-reasoning Command models. For those models
+        # we surface ``reasoning`` as ``tool_plan`` and drop the thinking
+        # block. Reasoning Command models emit a regular thinking block
+        # alongside tool calls, so for them we leave the thinking block
+        # in place and never set ``tool_plan``.
         tool_plan: str | None = None
-        if (
-            self._surface_reasoning_as_tool_plan
-            and tool_calls
-            and msg.reasoning
-        ):
+        if not self._is_reasoning_model and tool_calls and msg.reasoning:
             tool_plan = msg.reasoning
             content_blocks = [
                 blk
@@ -843,7 +844,7 @@ class CohereServingChatV2(OpenAIServingChat):
         # Non-reasoning Command models: emit ``tool-plan-delta`` events
         # directly instead of opening a thinking content block. The
         # ``tool-plan-delta`` event has no start/end pair around it.
-        if self._surface_reasoning_as_tool_plan:
+        if not self._is_reasoning_model:
             events: list[str] = list(self._close_open_blocks(state))
             events.append(
                 _emit(

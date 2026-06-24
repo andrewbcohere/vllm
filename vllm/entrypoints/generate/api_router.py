@@ -207,6 +207,7 @@ async def init_generate_state(
             enable_prompt_tokens_details=args.enable_prompt_tokens_details,
             enable_force_include_usage=args.enable_force_include_usage,
             default_chat_template_kwargs=args.default_chat_template_kwargs,
+            is_reasoning_model=args.cohere_is_reasoning_model,
         )
         if CohereServingChatV2 is not None and "generate" in supported_tasks
         else None

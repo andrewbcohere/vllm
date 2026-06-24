@@ -149,6 +149,15 @@ class BaseFrontendArgs:
     """If set to False, output deltas will not be logged. Relevant only if 
     --enable-log-outputs is set.
     """
+    cohere_is_reasoning_model: bool = True
+    """Cohere ``/cohere/v2/chat`` only. Whether the served model is a
+    reasoning Command-family model. When True (default), the assistant's
+    chain-of-thought is surfaced as a ``thinking`` content block (or
+    ``content-*`` events on the stream). When False, reasoning is
+    surfaced as Cohere's ``tool_plan`` field (or ``tool-plan-delta``
+    events) whenever the model emits tool calls, matching older non-
+    reasoning Command models. Has no effect on the non-Cohere
+    endpoints."""
     log_error_stack: bool = envs.VLLM_SERVER_DEV_MODE
     """If set to True, log the stack trace of error responses"""
     tokens_only: bool = False
