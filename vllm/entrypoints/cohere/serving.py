@@ -526,6 +526,7 @@ class CohereServingChatV2(OpenAIServingChat):
         chat_req: ChatCompletionRequest,
         request: CohereChatV2Request,
     ) -> None:
+        # TODO need to add support for this
         if request.tool_choice == "REQUIRED":
             chat_req.tool_choice = "required"
         elif request.tool_choice == "NONE":
