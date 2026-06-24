@@ -683,7 +683,9 @@ class CohereServingChatV2(OpenAIServingChat):
                 if isinstance(payload, dict):
                     out.append(Citation.model_validate(payload))
             except Exception:  # pragma: no cover - defensive
-                logger.debug("Skipping malformed citation: %r", c, exc_info=True)
+                logger.warning(
+                    "Skipping malformed citation: %r", c, exc_info=True
+                )
         return out or None
 
     @staticmethod
@@ -1003,7 +1005,11 @@ class CohereServingChatV2(OpenAIServingChat):
             try:
                 citation = Citation.model_validate(payload)
             except Exception:  # pragma: no cover - defensive
-                logger.debug("Skipping malformed streamed citation: %r", payload)
+                logger.warning(
+                    "Skipping malformed streamed citation: %r",
+                    payload,
+                    exc_info=True,
+                )
                 continue
             idx = state.next_citation_index()
             events.append(
