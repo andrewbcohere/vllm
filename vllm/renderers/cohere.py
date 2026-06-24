@@ -23,6 +23,14 @@ fields that grounding/citation features require:
   template overrides
 * ``cohere_format``: ``cmd3`` (default) or ``cmd4``
 
+Any *other* keys in ``chat_template_kwargs`` are forwarded verbatim to
+the melody render config as ``additional_template_fields`` -- i.e. they
+become Jinja variables accessible inside the template. This mirrors
+vLLM's documented contract for ``chat_template_kwargs`` ("kwargs
+accessible by the template"), so e.g.
+``chat_template_kwargs={"reasoning_effort": "low"}`` resolves
+``{{ reasoning_effort }}`` inside cmd3 / cmd4 templates.
+
 Citations produced by Cohere models are surfaced through the standard
 ``ChatMessage.citations`` / ``DeltaMessage.citations`` fields (populated by
 the ``cohere2`` reasoning parser).
@@ -57,6 +65,38 @@ logger = init_logger(__name__)
 
 _DEFAULT_FORMAT = "cmd3"
 _VALID_FORMATS = ("cmd3", "cmd4")
+
+# Keys this renderer interprets directly from ``chat_template_kwargs`` and
+# maps onto typed melody render-config fields. Everything *not* in this
+# set is forwarded verbatim to melody as ``additional_template_fields``
+# (i.e. as Jinja template variables), so callers can write
+# ``chat_template_kwargs = {"my_var": "..."}`` and have ``{{ my_var }}``
+# resolve inside the template -- matching vLLM's documented contract for
+# ``chat_template_kwargs`` and avoiding the older nested-namespace form
+# (``chat_template_kwargs.additional_template_fields.my_var``).
+_RENDERER_CONSUMED_KEYS = frozenset(
+    {
+        "cohere_format",
+        "template_id",
+        "template_jinja",
+        "use_jinja",
+        "documents",
+        "available_tools",
+        "tools",
+        "reasoning_type",
+        "thinking",
+        "dev_instruction",
+        "response_format",
+        "json_schema",
+        "json_mode",
+        "safety_mode",
+        "citation_quality",
+        "citation_options",
+        "skip_preamble",
+        "grounding",
+        "platform_instruction",
+    }
+)
 
 
 def _try_import_melody():
@@ -286,8 +326,6 @@ def _build_render_config(
 
     if (di := chat_template_kwargs.get("dev_instruction")) is not None:
         config["dev_instruction"] = str(di)
-    if (extra := chat_template_kwargs.get("additional_template_fields")):
-        config["additional_template_fields"] = dict(extra)
 
     # JSON / structured outputs
     if (rf := chat_template_kwargs.get("response_format")) is not None:
@@ -331,6 +369,19 @@ def _build_render_config(
                 config["grounding"] = str(mode).lower()
         if (pi := chat_template_kwargs.get("platform_instruction")) is not None:
             config["platform_instruction"] = str(pi)
+
+    # Anything we didn't explicitly interpret above is forwarded to melody
+    # as a Jinja template variable. This matches vLLM's documented contract
+    # for ``chat_template_kwargs`` ("kwargs accessible by the template")
+    # and lets callers write e.g. ``{"reasoning_effort": "low"}`` directly
+    # without a nested ``additional_template_fields`` wrapper.
+    extra = {
+        k: v
+        for k, v in chat_template_kwargs.items()
+        if k not in _RENDERER_CONSUMED_KEYS
+    }
+    if extra:
+        config["additional_template_fields"] = extra
 
     return fmt, config
 
