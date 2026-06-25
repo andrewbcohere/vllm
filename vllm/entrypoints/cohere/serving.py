@@ -62,7 +62,6 @@ from vllm.entrypoints.cohere.protocol import (
     ToolCallStartEvent,
     ToolPlanDeltaEvent,
 )
-from vllm.entrypoints.logger import RequestLogger
 from vllm.entrypoints.openai.chat_completion.protocol import (
     ChatCompletionRequest,
     ChatCompletionResponse,
@@ -77,6 +76,7 @@ from vllm.entrypoints.openai.engine.protocol import (
     StreamOptions,
 )
 from vllm.entrypoints.openai.models.serving import OpenAIServingModels
+from vllm.entrypoints.serve.utils.request_logger import RequestLogger
 
 if TYPE_CHECKING:
     from vllm.entrypoints.serve.render.serving import OpenAIServingRender
@@ -302,9 +302,7 @@ class CohereServingChatV2(OpenAIServingChat):
         return "".join(parts)
 
     @classmethod
-    def _convert_user_message(
-        cls, msg: UserChatMessageV2
-    ) -> dict[str, Any]:
+    def _convert_user_message(cls, msg: UserChatMessageV2) -> dict[str, Any]:
         if isinstance(msg.content, str):
             return {"role": "user", "content": msg.content}
 
@@ -326,17 +324,12 @@ class CohereServingChatV2(OpenAIServingChat):
                         "image_url": image_url,
                     }
                 )
-        if (
-            len(content_parts) == 1
-            and content_parts[0]["type"] == "text"
-        ):
+        if len(content_parts) == 1 and content_parts[0]["type"] == "text":
             return {"role": "user", "content": content_parts[0]["text"]}
         return {"role": "user", "content": content_parts}
 
     @classmethod
-    def _convert_assistant_message(
-        cls, msg: AssistantChatMessageV2
-    ) -> dict[str, Any]:
+    def _convert_assistant_message(cls, msg: AssistantChatMessageV2) -> dict[str, Any]:
         out: dict[str, Any] = {"role": "assistant"}
 
         # Cohere splits reasoning out into ``thinking`` content blocks. We
@@ -371,9 +364,7 @@ class CohereServingChatV2(OpenAIServingChat):
                     "type": "function",
                     "function": {
                         "name": (tc.function.name if tc.function else "") or "",
-                        "arguments": (
-                            tc.function.arguments if tc.function else None
-                        )
+                        "arguments": (tc.function.arguments if tc.function else None)
                         or "{}",
                     },
                 }
@@ -382,9 +373,7 @@ class CohereServingChatV2(OpenAIServingChat):
         return out
 
     @classmethod
-    def _convert_tool_message(
-        cls, msg: ToolChatMessageV2
-    ) -> dict[str, Any]:
+    def _convert_tool_message(cls, msg: ToolChatMessageV2) -> dict[str, Any]:
         if isinstance(msg.content, str):
             return {
                 "role": "tool",
@@ -607,9 +596,7 @@ class CohereServingChatV2(OpenAIServingChat):
                 {"type": ContentBlockType.THINKING, "thinking": msg.reasoning}
             )
         if msg.content:
-            content_blocks.append(
-                {"type": ContentBlockType.TEXT, "text": msg.content}
-            )
+            content_blocks.append({"type": ContentBlockType.TEXT, "text": msg.content})
 
         tool_calls: list[ToolCallV2] | None = None
         if msg.tool_calls:
@@ -683,9 +670,7 @@ class CohereServingChatV2(OpenAIServingChat):
                 if isinstance(payload, dict):
                     out.append(Citation.model_validate(payload))
             except Exception:  # pragma: no cover - defensive
-                logger.warning(
-                    "Skipping malformed citation: %r", c, exc_info=True
-                )
+                logger.warning("Skipping malformed citation: %r", c, exc_info=True)
         return out or None
 
     @staticmethod
@@ -735,7 +720,7 @@ class CohereServingChatV2(OpenAIServingChat):
             async for item in generator:
                 if not item.startswith("data:"):
                     continue
-                data_str = item[len("data:"):].strip().rstrip("\n")
+                data_str = item[len("data:") :].strip().rstrip("\n")
                 if not data_str:
                     continue
                 if data_str == "[DONE]":
@@ -787,17 +772,13 @@ class CohereServingChatV2(OpenAIServingChat):
                         yield ev
 
                 if delta.tool_calls:
-                    for ev in self._handle_tool_call_deltas(
-                        state, delta.tool_calls
-                    ):
+                    for ev in self._handle_tool_call_deltas(state, delta.tool_calls):
                         yield ev
 
                 # Citations: a Cohere-specific extension on DeltaMessage that
                 # the cohere renderer/parsers may populate.
                 if getattr(delta, "citations", None):
-                    for ev in self._handle_citation_deltas(
-                        state, delta.citations
-                    ):
+                    for ev in self._handle_citation_deltas(state, delta.citations):
                         yield ev
 
         except Exception as exc:
@@ -841,9 +822,7 @@ class CohereServingChatV2(OpenAIServingChat):
 
     # -- per-delta helpers --------------------------------------------
 
-    def _handle_thinking_delta(
-        self, state: _StreamState, delta_text: str
-    ) -> list[str]:
+    def _handle_thinking_delta(self, state: _StreamState, delta_text: str) -> list[str]:
         # Non-reasoning Command models: emit ``tool-plan-delta`` events
         # directly instead of opening a thinking content block. The
         # ``tool-plan-delta`` event has no start/end pair around it.
@@ -884,17 +863,13 @@ class CohereServingChatV2(OpenAIServingChat):
             _emit(
                 ContentDeltaEvent(
                     index=state.active_block_index,
-                    delta={
-                        "message": {"content": {"thinking": delta_text}}
-                    },
+                    delta={"message": {"content": {"thinking": delta_text}}},
                 )
             )
         )
         return events
 
-    def _handle_text_delta(
-        self, state: _StreamState, delta_text: str
-    ) -> list[str]:
+    def _handle_text_delta(self, state: _StreamState, delta_text: str) -> list[str]:
         events: list[str] = []
         if state.active_block != ContentBlockType.TEXT:
             events.extend(self._close_open_blocks(state))
@@ -926,9 +901,7 @@ class CohereServingChatV2(OpenAIServingChat):
         )
         return events
 
-    def _handle_tool_call_deltas(
-        self, state: _StreamState, deltas: list
-    ) -> list[str]:
+    def _handle_tool_call_deltas(self, state: _StreamState, deltas: list) -> list[str]:
         events: list[str] = []
         for tc in deltas:
             tc_index = tc.index
@@ -950,11 +923,8 @@ class CohereServingChatV2(OpenAIServingChat):
                                         "id": tc.id or "",
                                         "type": "function",
                                         "function": {
-                                            "name": (fn.name if fn else "")
-                                            or "",
-                                            "arguments": (
-                                                fn.arguments if fn else None
-                                            )
+                                            "name": (fn.name if fn else "") or "",
+                                            "arguments": (fn.arguments if fn else None)
                                             or "",
                                         },
                                     }
@@ -997,9 +967,7 @@ class CohereServingChatV2(OpenAIServingChat):
         """
         events: list[str] = []
         for c in citations:
-            payload = (
-                c.model_dump(exclude_none=True) if hasattr(c, "model_dump") else c
-            )
+            payload = c.model_dump(exclude_none=True) if hasattr(c, "model_dump") else c
             if not isinstance(payload, dict):
                 continue
             try:
@@ -1016,9 +984,11 @@ class CohereServingChatV2(OpenAIServingChat):
                 _emit(
                     CitationStartEvent(
                         index=idx,
-                        delta={"message": {"citations": citation.model_dump(
-                            exclude_none=True
-                        )}},
+                        delta={
+                            "message": {
+                                "citations": citation.model_dump(exclude_none=True)
+                            }
+                        },
                     )
                 )
             )
@@ -1033,13 +1003,9 @@ class CohereServingChatV2(OpenAIServingChat):
         """
         events: list[str] = []
         if state.active_block in (ContentBlockType.TEXT, ContentBlockType.THINKING):
-            events.append(
-                _emit(ContentEndEvent(index=state.active_block_index))
-            )
+            events.append(_emit(ContentEndEvent(index=state.active_block_index)))
         elif state.active_block == ContentBlockType.TOOL_CALL:
-            events.append(
-                _emit(ToolCallEndEvent(index=state.active_tool_index))
-            )
+            events.append(_emit(ToolCallEndEvent(index=state.active_tool_index)))
         state.active_block = None
         state.active_block_index = None
         state.active_tool_index = None

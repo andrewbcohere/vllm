@@ -10,7 +10,6 @@ inside :func:`attach_router`. If the SDK isn't installed, attach_router
 logs a one-line notice and returns without registering the route, so
 vLLM continues to boot normally.
 """
-from __future__ import annotations
 
 from fastapi import FastAPI
 
@@ -49,8 +48,11 @@ def attach_router(app: FastAPI) -> None:
     )
     from vllm.entrypoints.cohere.serving import CohereServingChatV2
     from vllm.entrypoints.openai.engine.protocol import ErrorResponse
-    from vllm.entrypoints.openai.utils import validate_json_request
-    from vllm.entrypoints.utils import load_aware_call, with_cancellation
+    from vllm.entrypoints.serve.utils.api_utils import (
+        load_aware_call,
+        validate_json_request,
+        with_cancellation,
+    )
 
     router = APIRouter()
 
@@ -67,9 +69,7 @@ def attach_router(app: FastAPI) -> None:
         status = info.code or fallback_status
         return JSONResponse(
             status_code=status,
-            content=CohereError(message=info.message).model_dump(
-                exclude_none=True
-            ),
+            content=CohereError(message=info.message).model_dump(exclude_none=True),
         )
 
     @router.post(
