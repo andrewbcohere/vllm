@@ -455,7 +455,7 @@ class CohereServingChatV2(OpenAIServingChat):
         if request.stream:
             chat_req.stream = True
             chat_req.stream_options = StreamOptions.model_validate(
-                {"include_usage": True, "continuous_usage_stats": True}
+                {"include_usage": True}
             )
 
     @classmethod

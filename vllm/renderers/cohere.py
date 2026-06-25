@@ -129,11 +129,37 @@ def _try_import_melody():
         ) from e
 
 
+_MELODY_ROLES = frozenset({"system", "user", "chatbot", "tool"})
+
+
 def _role_to_melody(role: str) -> str:
-    """Map an OpenAI role to the role string melody expects."""
+    """Map an OpenAI role to the role string melody expects.
+
+    The cmd3 / cmd4 jinja templates only recognize ``system``, ``user``,
+    ``assistant``/``chatbot``, and ``tool``: any other role is silently
+    dropped by the template's role-dispatch chain (no fallback branch),
+    which produces a malformed prompt without any error. We therefore
+    refuse unknown roles up front rather than letting them disappear.
+
+    Aliases:
+
+    * ``assistant`` -> ``chatbot`` (Cohere's historical assistant role
+      name used by the templates).
+    * ``developer`` -> ``system`` (OpenAI's ``developer`` role is
+      documented as high-priority instructions, which maps onto the
+      ``system`` slot in Cohere's prompt format).
+    """
+    role = role.lower()
     if role == "assistant":
         return "chatbot"
-    return role
+    if role == "developer":
+        return "system"
+    if role in _MELODY_ROLES:
+        return role
+    raise ValueError(
+        f"Unsupported message role for the cohere renderer: {role!r}. "
+        "Expected one of: system, developer, user, assistant, chatbot, tool."
+    )
 
 
 def _normalize_tool_call(tc: dict[str, Any] | Any) -> dict[str, Any]:
