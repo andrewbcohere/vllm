@@ -72,6 +72,13 @@ class ChatMessage(OpenAIBaseModel):
     # OpenAI-compatible clients see the standard shape.
     citations: list[Citation] | None = None
 
+    @model_serializer(mode="wrap")
+    def _serialize(self, handler):
+        data = handler(self)
+        if len(data.get("tool_calls", [])) == 0:
+            data.pop("tool_calls", None)
+        return data
+
 
 class ChatCompletionLogProb(OpenAIBaseModel):
     token: str
@@ -961,6 +968,8 @@ class BatchChatCompletionRequest(OpenAIBaseModel):
     temperature: float | None = 0.7
     top_p: float | None = 1.0
     user: str | None = None
+    tool_choice: Literal["none"] | None = "none"
+    include_reasoning: bool = True
 
     # vLLM extensions
     best_of: int | None = None
