@@ -79,7 +79,7 @@ from vllm.entrypoints.openai.models.serving import OpenAIServingModels
 from vllm.entrypoints.serve.utils.request_logger import RequestLogger
 
 if TYPE_CHECKING:
-    from vllm.entrypoints.serve.render.serving import OpenAIServingRender
+    from vllm.renderers.online_renderer import OnlineRenderer
 
 logger = logging.getLogger(__name__)
 
@@ -170,7 +170,7 @@ class CohereServingChatV2(OpenAIServingChat):
         models: OpenAIServingModels,
         response_role: str,
         *,
-        openai_serving_render: OpenAIServingRender,
+        online_renderer: "OnlineRenderer",
         request_logger: RequestLogger | None,
         chat_template: str | None,
         chat_template_content_format: ChatTemplateContentFormatOption,
@@ -187,7 +187,7 @@ class CohereServingChatV2(OpenAIServingChat):
             engine_client=engine_client,
             models=models,
             response_role=response_role,
-            openai_serving_render=openai_serving_render,
+            online_renderer=online_renderer,
             request_logger=request_logger,
             chat_template=chat_template,
             chat_template_content_format=chat_template_content_format,

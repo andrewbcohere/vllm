@@ -196,7 +196,7 @@ async def init_generate_state(
             engine_client,
             state.openai_serving_models,
             args.response_role,
-            openai_serving_render=state.openai_serving_render,
+            online_renderer=state.online_renderer,
             request_logger=request_logger,
             chat_template=resolved_chat_template,
             chat_template_content_format=args.chat_template_content_format,
