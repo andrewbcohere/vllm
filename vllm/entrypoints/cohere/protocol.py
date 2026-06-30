@@ -195,6 +195,48 @@ class CohereChatV2Request(BaseModel):
             raise ValueError("max_tokens must be non-negative")
         return v
 
+    @field_validator("messages", mode="before")
+    @classmethod
+    def _normalize_message_roles(cls, v: Any) -> Any:
+        """Rewrite OpenAI-style ``developer`` roles to ``system``.
+
+        Cohere's v2 ``ChatMessageV2`` discriminated union only admits
+        the four literal roles ``user`` / ``assistant`` / ``system`` /
+        ``tool``. OpenAI's ``developer`` role is documented as
+        high-priority system instructions, so we alias it onto
+        ``system`` *before* the SDK discriminator runs (otherwise it
+        rejects the message with a ``literal_error`` against each union
+        member). Mirrors ``_role_to_melody`` in the renderer so the
+        same alias is honoured no matter which surface the message
+        arrives through.
+
+        ``mode="before"`` is required so the rewrite happens before the
+        ``list[ChatMessageV2]`` coercion runs the SDK's discriminated
+        union; a default-mode validator would never see ``developer``
+        because validation would have already failed. On any structural
+        surprise (non-iterable input, items without a dict-shaped
+        ``role`` field, etc.) we hand ``v`` back unchanged and let
+        Pydantic's normal coercion surface a precise error.
+        """
+        try:
+            return [
+                {**msg, "role": "system"}
+                if msg.get("role", "").lower() == "developer"
+                else msg
+                for msg in v
+            ]
+        except (AttributeError, TypeError):
+            return v
+
+    @field_validator("messages")
+    @classmethod
+    def _validate_messages(
+        cls, v: list[ChatMessageV2]
+    ) -> list[ChatMessageV2]:
+        if not v:
+            raise ValueError("messages must contain at least one message")
+        return v
+
 
 # ---------------------------------------------------------------------------
 # Usage / Logprobs
