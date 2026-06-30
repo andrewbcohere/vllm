@@ -569,8 +569,14 @@ class CohereServingChatV2(OpenAIServingChat):
                 "thinking",
                 request.thinking.model_dump(exclude_none=True),
             )
-        if request.strict_tools is not None:
-            kwargs.setdefault("strict_tools", bool(request.strict_tools))
+
+        # ``strict_tools`` is intentionally NOT forwarded here. It's a
+        # decoder-guidance flag that ``_apply_tools`` already maps onto
+        # per-function OpenAI ``strict: true`` on ``chat_req.tools``;
+        # ``cohere_melody.render_cmd3``/``render_cmd4`` have no
+        # ``strict_tools`` knob, and the renderer's residual-forward path
+        # would otherwise surface it as a Jinja variable ``{{ strict_tools }}``
+        # that templates have no defined use for.
 
         if kwargs:
             chat_req.chat_template_kwargs = kwargs
@@ -649,8 +655,8 @@ class CohereServingChatV2(OpenAIServingChat):
 
         ``ChatMessage`` natively carries a ``citations: list[Citation] |
         None`` field (see :mod:`vllm.entrypoints.openai.engine.protocol`).
-        Renderers/parsers (e.g. the ``cohere2`` reasoning parser) populate
-        it. We map each :class:`vllm...Citation` into the SDK
+        Renderers / parsers (the ``cohere_command3`` and
+        ``cohere_command4`` reasoning parsers) populate it. We map each :class:`vllm...Citation` into the SDK
         :class:`cohere.types.Citation` wire model, preserving sources and
         span.
         """

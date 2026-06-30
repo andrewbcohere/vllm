@@ -103,6 +103,19 @@ async def init_generate_state(
         tool_server = None
     resolved_chat_template = load_chat_template(args.chat_template)
 
+    # Fold the dedicated ``--cohere-format`` CLI flag into the renderer's
+    # default chat-template kwargs. The cohere renderer reads
+    # ``chat_template_kwargs["cohere_format"]`` to pick cmd3 vs cmd4
+    # rendering; making this a first-class flag keeps the right format
+    # discoverable for ``vllm serve --tokenizer-mode cohere`` users
+    # without forcing them to hand-construct a JSON dict for
+    # ``--default-chat-template-kwargs``. Per-request overrides still
+    # take precedence (see ``merge_kwargs`` in
+    # ``ChatCompletionRequest.build_chat_params``).
+    default_chat_template_kwargs = dict(args.default_chat_template_kwargs or {})
+    if getattr(args, "cohere_format", None):
+        default_chat_template_kwargs.setdefault("cohere_format", args.cohere_format)
+
     # Render endpoints are always backed by OnlineRenderer so that
     # /v1/chat/completions/render and /v1/completions/render work on both
     # generate-mode and render-only servers. Created in init_app_state.
@@ -123,7 +136,7 @@ async def init_generate_state(
             enable_prompt_tokens_details=args.enable_prompt_tokens_details,
             enable_force_include_usage=args.enable_force_include_usage,
             enable_log_outputs=args.enable_log_outputs,
-            default_chat_template_kwargs=args.default_chat_template_kwargs,
+            default_chat_template_kwargs=default_chat_template_kwargs,
         )
         if "generate" in supported_tasks
         else None
@@ -136,7 +149,7 @@ async def init_generate_state(
         request_logger=request_logger,
         chat_template=resolved_chat_template,
         chat_template_content_format=args.chat_template_content_format,
-        default_chat_template_kwargs=args.default_chat_template_kwargs,
+        default_chat_template_kwargs=default_chat_template_kwargs,
         trust_request_chat_template=args.trust_request_chat_template,
         return_tokens_as_token_ids=args.return_tokens_as_token_ids,
         enable_auto_tools=args.enable_auto_tool_choice,
@@ -186,7 +199,7 @@ async def init_generate_state(
             reasoning_parser=args.structured_outputs_config.reasoning_parser,
             enable_prompt_tokens_details=args.enable_prompt_tokens_details,
             enable_force_include_usage=args.enable_force_include_usage,
-            default_chat_template_kwargs=args.default_chat_template_kwargs,
+            default_chat_template_kwargs=default_chat_template_kwargs,
         )
         if "generate" in supported_tasks
         else None
@@ -206,7 +219,7 @@ async def init_generate_state(
             reasoning_parser=args.structured_outputs_config.reasoning_parser,
             enable_prompt_tokens_details=args.enable_prompt_tokens_details,
             enable_force_include_usage=args.enable_force_include_usage,
-            default_chat_template_kwargs=args.default_chat_template_kwargs,
+            default_chat_template_kwargs=default_chat_template_kwargs,
             is_reasoning_model=args.cohere_is_reasoning_model,
         )
         if CohereServingChatV2 is not None and "generate" in supported_tasks

@@ -132,6 +132,39 @@ def _try_import_melody():
 _MELODY_ROLES = frozenset({"system", "user", "chatbot", "tool"})
 
 
+# Cohere v2 ``citation_options.mode`` -> melody cmd4 ``grounding``.
+# v2 surfaces three modes (``FAST`` / ``ACCURATE`` / ``OFF``) but cmd4's
+# template doesn't differentiate fast vs accurate at the prompt layer --
+# both just turn grounding on. ``unknown`` / ``enabled`` / ``disabled``
+# are the values melody actually accepts.
+_CMD4_GROUNDING_FROM_MODE = {
+    "fast": "enabled",
+    "accurate": "enabled",
+    "on": "enabled",
+    "enabled": "enabled",
+    "off": "disabled",
+    "disabled": "disabled",
+    "unknown": "unknown",
+}
+
+
+def _normalize_cmd4_grounding(value: Any) -> str:
+    """Coerce a user-facing grounding/citation mode to melody's vocab.
+
+    Raises ``ValueError`` rather than letting an unrecognized value slip
+    through to ``render_cmd4`` and surface as a generic
+    ``Invalid config: grounding`` from melody.
+    """
+    out = _CMD4_GROUNDING_FROM_MODE.get(value.lower())
+    if out is None:
+        raise ValueError(
+            f"Unrecognized cmd4 grounding value: {value!r}. Expected one of "
+            f"FAST, ACCURATE, OFF (citation_options.mode), or "
+            f"enabled / disabled / unknown."
+        )
+    return out
+
+
 def _role_to_melody(role: str) -> str:
     """Map an OpenAI role to the role string melody expects.
 
@@ -425,13 +458,19 @@ def _build_render_config(
         if "skip_preamble" in chat_template_kwargs:
             config["skip_preamble"] = bool(chat_template_kwargs["skip_preamble"])
     else:  # cmd4
-        # cmd4 uses ``grounding`` rather than safety_mode/citation_quality
+        # cmd4 uses ``grounding`` rather than safety_mode/citation_quality.
+        # melody's cmd4 only accepts ``unknown`` / ``enabled`` / ``disabled``,
+        # so the Cohere v2 ``citation_options.mode`` values
+        # (``FAST`` / ``ACCURATE`` / ``OFF``) have to be normalized -- a
+        # raw lowercased passthrough would raise from
+        # ``render_cmd4`` (cmd4 has no fast/accurate distinction at the
+        # prompt-template layer; both request grounding-on).
         if (gr := chat_template_kwargs.get("grounding")) is not None:
-            config["grounding"] = str(gr).lower()
+            config["grounding"] = _normalize_cmd4_grounding(gr)
         elif (co := chat_template_kwargs.get("citation_options")):
             mode = co.get("mode") if isinstance(co, dict) else None
             if mode is not None:
-                config["grounding"] = str(mode).lower()
+                config["grounding"] = _normalize_cmd4_grounding(mode)
         if (pi := chat_template_kwargs.get("platform_instruction")) is not None:
             config["platform_instruction"] = str(pi)
 
