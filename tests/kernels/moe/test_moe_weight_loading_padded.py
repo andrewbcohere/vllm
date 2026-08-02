@@ -9,6 +9,8 @@ have the original unpadded size. These tests verify that weight loading
 correctly handles this mismatch.
 """
 
+from unittest.mock import MagicMock
+
 import pytest
 import torch
 
@@ -343,8 +345,6 @@ class TestWeightLoadingWithPaddedHiddenSize:
 
     def test_bnb_shape_mismatch_raises(self):
         """BnB + padded hidden_size should raise via weight_loader."""
-        from unittest.mock import MagicMock
-
         num_experts = 1
         padded_packed = 3072  # padded packed size
         original_packed = 2688  # original packed size
@@ -395,3 +395,65 @@ class TestPerTensorScaleCoercion:
         # numel > 1 must fail loudly instead of silently picking an element.
         with pytest.raises(RuntimeError):
             RoutedExperts._to_scalar(torch.tensor([0.1, 0.2]))
+
+
+class TestLoadWeightsMissingParam:
+    """Regression test for unregistered per-expert bias parameters.
+
+    Some quant methods (e.g. NVFP4 MoE experts) don't register `w13_bias`/
+    `w2_bias` parameters even when the checkpoint includes bias tensors
+    (e.g. CohereLabs/command-a-plus-05-2026-w4a4). `AutoWeightsLoader`
+    tolerates unexpected ".bias" tensors for models it loads generically
+    (see `ignore_unexpected_suffixes`), but that leniency never reaches
+    `RoutedExperts.load_weights`, since expert weights are delegated to it
+    wholesale instead of going through generic per-parameter matching.
+    `RoutedExperts.load_weights` must mirror that leniency itself instead of
+    raising `AttributeError`, while still failing loudly for genuinely
+    missing (non-bias) parameters.
+    """
+
+    LAYER_NAME = "model.layers.0.mlp.experts"
+
+    def _make_layer(self) -> MagicMock:
+        layer = MagicMock(spec=RoutedExperts)
+        layer.layer_name = self.LAYER_NAME
+        layer.moe_config = MagicMock(hidden_dim_unpadded=None, hidden_dim=8)
+        layer.get_expert_mapping.return_value = (
+            RoutedExperts.build_expert_params_mapping(
+                ckpt_gate_proj_name="gate_proj",
+                ckpt_down_proj_name="down_proj",
+                ckpt_up_proj_name="up_proj",
+                num_experts=1,
+                routed_experts_prefix="",
+                include_fused=True,
+            )
+        )
+        return layer
+
+    def test_missing_bias_param_is_skipped(self):
+        layer = self._make_layer()
+        weight_param = MagicMock()
+        weight_param.weight_loader.return_value = True
+        layer.w2_weight = weight_param
+        # Deliberately don't set `layer.w2_bias`, mimicking a quant method
+        # (e.g. NVFP4) that never registers it.
+
+        weights = [
+            ("0.down_proj.weight", torch.randn(4, 8)),
+            ("0.down_proj.bias", torch.randn(4)),
+        ]
+
+        loaded = list(RoutedExperts.load_weights(layer, weights))
+
+        assert loaded == ["w2_weight"]
+        weight_param.weight_loader.assert_called_once()
+
+    def test_missing_non_bias_param_raises(self):
+        layer = self._make_layer()
+        # Deliberately don't set `layer.w2_weight`, simulating a genuine bug
+        # where an actual weight (not just an optional bias) is missing.
+
+        weights = [("0.down_proj.weight", torch.randn(4, 8))]
+
+        with pytest.raises(AttributeError, match="w2_weight"):
+            list(RoutedExperts.load_weights(layer, weights))

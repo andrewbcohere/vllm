@@ -936,7 +936,30 @@ class RoutedExperts(PluggableLayer):
                 matched = True
                 weight_name = qual_name.replace(weight_name, param_name)
                 param_name = weight_name.removeprefix(f"{self.layer_name}.")
-                param = getattr(self, param_name)
+                param = getattr(self, param_name, None)
+                if param is None:
+                    # Some quant methods (e.g. NVFP4 MoE experts) don't
+                    # register bias parameters even when the checkpoint
+                    # includes them. `AutoWeightsLoader` tolerates unexpected
+                    # ".bias" tensors for the same reason (see
+                    # `ignore_unexpected_suffixes`), but that leniency never
+                    # reaches here since expert weights are loaded through
+                    # this method instead of generic per-parameter matching.
+                    if param_name.endswith("_bias"):
+                        logger.warning_once(
+                            "Ignoring checkpoint tensor '%s': layer '%s' has "
+                            "no '%s' parameter. The selected quantization "
+                            "method likely doesn't support expert bias.",
+                            qual_name,
+                            self.layer_name,
+                            param_name,
+                        )
+                        continue
+                    raise AttributeError(
+                        f"'{type(self).__name__}' object has no attribute "
+                        f"'{param_name}' needed to load checkpoint tensor "
+                        f"'{qual_name}'"
+                    )
                 if is_fused:
                     # w1 and w3 share one fused tensor; use a local copy so the
                     # transpose below doesn't mutate loaded_weight across
