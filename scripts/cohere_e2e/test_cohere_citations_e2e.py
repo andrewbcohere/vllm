@@ -101,19 +101,14 @@ Optional flags
 from __future__ import annotations
 
 import argparse
-import contextlib
 import json
-import os
-import signal
-import subprocess
 import sys
-import tempfile
 import time
 from dataclasses import dataclass, field
 from typing import Any
-from urllib.parse import urlparse
 
 import httpx
+from vllm_server import add_server_args, ensure_server, release_server
 
 DONE_LINE = "data: [DONE]"
 
@@ -129,11 +124,7 @@ REASONING_BUDGET = 2048
 
 PENGUIN_DOCUMENTS = [
     {"data": {"snippet": "The tallest penguin is the Emperor penguin"}},
-    {
-        "data": {
-            "snippet": "The latin name for Emperor penguin is Aptenodytes forsteri"
-        }
-    },
+    {"data": {"snippet": "The latin name for Emperor penguin is Aptenodytes forsteri"}},
     {"data": {"snippet": "The smallest penguin is the fairy penguin"}},
     {"data": {"snippet": "The latin name for fairy penguin is Eudyptula minor"}},
 ]
@@ -293,130 +284,6 @@ def _assert_citation_shape(citations: list[dict[str, Any]]) -> None:
             _expect("type" in src, f"citation source missing type: {src}")
 
 
-# ----------------------------------------------------------------------
-# Optional: manage a vLLM server process ourselves
-# ----------------------------------------------------------------------
-
-
-def _server_is_healthy(base_url: str, timeout: float = 5.0) -> bool:
-    try:
-        with httpx.Client(timeout=timeout) as client:
-            resp = client.get(f"{base_url.rstrip('/')}/health")
-        return resp.status_code == 200
-    except (httpx.HTTPError, OSError):
-        return False
-
-
-@dataclass
-class ManagedServer:
-    proc: subprocess.Popen
-    log_path: str
-
-    def stop(self, *, timeout: float = 30.0) -> None:
-        if self.proc.poll() is not None:
-            return
-        pgid: int | None = None
-        with contextlib.suppress(ProcessLookupError, OSError):
-            pgid = os.getpgid(self.proc.pid)
-        target = -pgid if pgid is not None else self.proc.pid
-        with contextlib.suppress(ProcessLookupError, OSError):
-            os.kill(target, signal.SIGTERM)
-        try:
-            self.proc.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            with contextlib.suppress(ProcessLookupError, OSError):
-                os.kill(target, signal.SIGKILL)
-            with contextlib.suppress(subprocess.TimeoutExpired):
-                self.proc.wait(timeout=10)
-
-
-def _build_vllm_serve_command(
-    *,
-    model: str,
-    host: str,
-    port: int,
-    is_reasoning_model: bool,
-    extra_args: list[str],
-) -> list[str]:
-    cmd = [
-        "vllm",
-        "serve",
-        model,
-        "--host",
-        host,
-        "--port",
-        str(port),
-        "--tokenizer-mode",
-        "cohere",
-        "--enable-auto-tool-choice",
-        "--tool-call-parser",
-        "cohere2",
-        "--reasoning-parser",
-        "cohere2",
-    ]
-    if not is_reasoning_model:
-        cmd.append("--no-cohere-is-reasoning-model")
-    cmd.extend(extra_args)
-    return cmd
-
-
-def _start_vllm_server(
-    *,
-    model: str,
-    host: str,
-    port: int,
-    is_reasoning_model: bool,
-    extra_args: list[str],
-) -> ManagedServer:
-    cmd = _build_vllm_serve_command(
-        model=model,
-        host=host,
-        port=port,
-        is_reasoning_model=is_reasoning_model,
-        extra_args=extra_args,
-    )
-    env = os.environ.copy()
-    env["VLLM_ENABLE_COHERE_API"] = "1"
-
-    log_fd, log_path = tempfile.mkstemp(
-        prefix="vllm-cohere-citations-e2e-", suffix=".log"
-    )
-    os.close(log_fd)
-    log_file = open(log_path, "w")  # noqa: SIM115 -- lives as long as the server
-
-    print(f"Server not reachable; starting it ourselves:\n  {' '.join(cmd)}")
-    print(f"  logs: {log_path}")
-    proc = subprocess.Popen(
-        cmd,
-        env=env,
-        stdout=log_file,
-        stderr=subprocess.STDOUT,
-        start_new_session=True,
-    )
-    return ManagedServer(proc=proc, log_path=log_path)
-
-
-def _wait_for_server(
-    *, base_url: str, server: ManagedServer, timeout: float
-) -> None:
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        exit_code = server.proc.poll()
-        if exit_code is not None:
-            raise RuntimeError(
-                f"vLLM server process exited early (code={exit_code}); "
-                f"see {server.log_path} for details."
-            )
-        if _server_is_healthy(base_url):
-            print(f"Server is healthy at {base_url}")
-            return
-        time.sleep(5.0)
-    raise TimeoutError(
-        f"vLLM server did not become healthy within {timeout:.0f}s; "
-        f"see {server.log_path} for details."
-    )
-
-
 def _no_grounding_warning(content: Any) -> str:
     text = _text_from_content_blocks(content) or ""
     thinking = _thinking_from_content_blocks(content) or ""
@@ -475,8 +342,7 @@ def test_documents_basic_non_stream(ctx: TestContext) -> None:
                 name,
                 True,
                 detail=(
-                    f"got {len(citations)} citation(s); "
-                    f"doc ids referenced={doc_ids}"
+                    f"got {len(citations)} citation(s); doc ids referenced={doc_ids}"
                 ),
             )
         )
@@ -697,9 +563,7 @@ def test_grounding_against_tool_result_in_history(ctx: TestContext) -> None:
                 },
                 {
                     "role": "assistant",
-                    "tool_plan": (
-                        "I will search for the second tallest mountain."
-                    ),
+                    "tool_plan": ("I will search for the second tallest mountain."),
                     "tool_calls": [
                         {
                             "id": "internet_search_0123",
@@ -720,9 +584,7 @@ def test_grounding_against_tool_result_in_history(ctx: TestContext) -> None:
                         {
                             "type": "document",
                             "document": {
-                                "data": {
-                                    "result": "The second tallest mountain is K2."
-                                }
+                                "data": {"result": "The second tallest mountain is K2."}
                             },
                         }
                     ],
@@ -790,9 +652,7 @@ def test_grounding_against_tool_result_in_history(ctx: TestContext) -> None:
             ctx.record(TestResult(name, True, detail=_no_grounding_warning(content)))
             return
         _assert_citation_shape(citations)
-        source_types = {
-            s.get("type") for c in citations for s in c.get("sources", [])
-        }
+        source_types = {s.get("type") for c in citations for s in c.get("sources", [])}
         ctx.record(
             TestResult(
                 name,
@@ -1133,77 +993,12 @@ def test_citations_in_conversation_history(ctx: TestContext) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--base-url",
-        default="http://127.0.0.1:8000",
-        help="vLLM server base URL (default: %(default)s)",
-    )
-    parser.add_argument(
-        "--model",
-        default=DEFAULT_MODEL,
-        help=(
-            "Model id as registered with the server (matches /v1/models). "
-            "Also used to launch the server when auto-starting it. "
-            "(default: %(default)s)"
-        ),
-    )
-    parser.add_argument(
-        "--reasoning-model",
-        dest="is_reasoning_model",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help=(
-            "Whether the server was (or should be) started with "
-            "--cohere-is-reasoning-model (default true). Controls whether "
-            "the thinking+citations cases run, and whether an auto-started "
-            "server gets --no-cohere-is-reasoning-model."
-        ),
-    )
+    add_server_args(parser, default_model=DEFAULT_MODEL)
     parser.add_argument(
         "--timeout",
         type=float,
         default=120.0,
         help="HTTP request timeout, seconds (default: %(default)s)",
-    )
-    parser.add_argument(
-        "--auto-start-server",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help=(
-            "Launch 'vllm serve --model <model>' ourselves if --base-url "
-            "isn't already serving a healthy /health response (default true)."
-        ),
-    )
-    parser.add_argument(
-        "--keep-server",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help=(
-            "Leave an auto-started server running after the tests finish, "
-            "so re-runs skip the model load (default true). Only applies "
-            "when this script started the server itself."
-        ),
-    )
-    parser.add_argument(
-        "--startup-timeout",
-        type=float,
-        default=1800.0,
-        help=(
-            "Seconds to wait for an auto-started server to become healthy "
-            "(default: %(default)s). Large quantized checkpoints can take "
-            "a long time to load."
-        ),
-    )
-    parser.add_argument(
-        "--extra-server-arg",
-        dest="extra_server_args",
-        action="append",
-        default=[],
-        help=(
-            "Extra 'vllm serve' argument, forwarded verbatim when this "
-            "script starts the server itself. Repeatable, e.g. "
-            "--extra-server-arg=--tensor-parallel-size=8"
-        ),
     )
     parser.add_argument(
         "--verbose",
@@ -1213,32 +1008,7 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    managed_server: ManagedServer | None = None
-    if args.auto_start_server and not _server_is_healthy(args.base_url):
-        parsed = urlparse(args.base_url)
-        host = parsed.hostname or "127.0.0.1"
-        port = parsed.port or 8000
-        managed_server = _start_vllm_server(
-            model=args.model,
-            host=host,
-            port=port,
-            is_reasoning_model=args.is_reasoning_model,
-            extra_args=args.extra_server_args,
-        )
-        try:
-            _wait_for_server(
-                base_url=args.base_url,
-                server=managed_server,
-                timeout=args.startup_timeout,
-            )
-        except Exception:
-            managed_server.stop()
-            raise
-    elif not _server_is_healthy(args.base_url):
-        print(
-            f"WARNING: {args.base_url} does not look healthy and "
-            f"--no-auto-start-server was passed; tests will likely fail."
-        )
+    managed_server = ensure_server(args, log_prefix="vllm-cohere-citations-e2e-")
 
     try:
         ctx = TestContext(
@@ -1283,20 +1053,7 @@ def main() -> int:
                             print(f"      {line}")
         return 0 if failed == 0 else 1
     finally:
-        if managed_server is not None:
-            if args.keep_server:
-                print(
-                    f"\nLeaving auto-started server running "
-                    f"(pid={managed_server.proc.pid}, "
-                    f"log={managed_server.log_path}).\n"
-                    f"Stop it with: kill {managed_server.proc.pid}"
-                )
-            else:
-                print(
-                    f"\nStopping auto-started server "
-                    f"(pid={managed_server.proc.pid})..."
-                )
-                managed_server.stop()
+        release_server(managed_server, keep=args.keep_server)
 
 
 if __name__ == "__main__":
