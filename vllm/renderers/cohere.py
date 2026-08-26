@@ -80,7 +80,8 @@ Citations produced by Cohere models are surfaced through the
 Cohere-scoped ``CohereChatMessage.citations`` /
 ``CohereDeltaMessage.citations`` fields (see
 :mod:`vllm.entrypoints.cohere.cohere_chat_message`), populated by the
-``cohere2`` reasoning parser. The base OpenAI ``ChatMessage`` /
+``cohere_command3`` / ``cohere_command4`` reasoning parsers. The base
+OpenAI ``ChatMessage`` /
 ``DeltaMessage`` keep their declared schemas unchanged; the response
 envelope declares them as ``SerializeAsAny[...]`` so the subclass
 fields survive JSON serialization.

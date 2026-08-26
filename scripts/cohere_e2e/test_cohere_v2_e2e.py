@@ -21,9 +21,12 @@ Prerequisites on the GPU host
        VLLM_ENABLE_COHERE_API=1 vllm serve <cohere-model-id> \\
            --tokenizer-mode cohere \\
            --enable-auto-tool-choice \\
-           --tool-call-parser cohere2 \\
-           --reasoning-parser cohere2 \\
+           --tool-call-parser cohere_command4 \\
+           --reasoning-parser cohere_command4 \\
            --port 8000
+
+   Use ``cohere_command3`` for both parsers when serving a
+   cmd3-generation checkpoint.
 
    For non-reasoning Command models (cmd3, older Command R), append
    ``--no-cohere-is-reasoning-model`` so the renderer surfaces reasoning

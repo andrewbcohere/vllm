@@ -51,7 +51,8 @@ Prerequisites on the GPU host
    ``/health`` response, the script launches ``vllm serve`` itself with
    the Cohere renderer / tokenizer wired up (``VLLM_ENABLE_COHERE_API=1``,
    ``--tokenizer-mode cohere``, ``--enable-auto-tool-choice``,
-   ``--tool-call-parser cohere2``, ``--reasoning-parser cohere2``), waits
+   ``--tool-call-parser cohere_command4``,
+   ``--reasoning-parser cohere_command4``), waits
    for it to become healthy, then runs the test suite:
 
        python scripts/test_cohere_citations_e2e.py
@@ -66,9 +67,13 @@ Prerequisites on the GPU host
        VLLM_ENABLE_COHERE_API=1 vllm serve <cohere-model-id> \\
            --tokenizer-mode cohere \\
            --enable-auto-tool-choice \\
-           --tool-call-parser cohere2 \\
-           --reasoning-parser cohere2 \\
+           --tool-call-parser cohere_command4 \\
+           --reasoning-parser cohere_command4 \\
            --port 8000
+
+   The parser name must match the checkpoint's prompt generation: use
+   ``cohere_command3`` for cmd3-generation models (and
+   ``--cohere-parser cohere_command3`` when this script owns the server).
 
    For non-reasoning Command models (cmd3, older Command R), pass
    ``--no-reasoning-model`` to this script; when it owns the server

@@ -48,6 +48,16 @@ import httpx
 
 DEFAULT_BASE_URL = "http://127.0.0.1:8000"
 
+# Tool-call and reasoning parser name, passed to both ``--tool-call-parser``
+# and ``--reasoning-parser``. Must be a key registered in
+# ``vllm.tool_parsers`` / ``vllm.reasoning``: today that means
+# ``cohere_command3`` or ``cohere_command4``. cmd4 is the default because
+# it matches ``CohereRenderer``'s own default prompt format
+# (``_DEFAULT_FORMAT``); serving a cmd3-generation checkpoint needs
+# ``--cohere-parser cohere_command3`` so the parsers agree with the
+# markup the model was trained to emit.
+DEFAULT_COHERE_PARSER = "cohere_command4"
+
 
 def server_is_healthy(base_url: str, timeout: float = 5.0) -> bool:
     try:
@@ -88,6 +98,7 @@ def build_serve_command(
     port: int,
     is_reasoning_model: bool,
     extra_args: list[str],
+    cohere_parser: str = DEFAULT_COHERE_PARSER,
 ) -> list[str]:
     cmd = [
         "vllm",
@@ -101,9 +112,9 @@ def build_serve_command(
         "cohere",
         "--enable-auto-tool-choice",
         "--tool-call-parser",
-        "cohere2",
+        cohere_parser,
         "--reasoning-parser",
-        "cohere2",
+        cohere_parser,
     ]
     if not is_reasoning_model:
         cmd.append("--no-cohere-is-reasoning-model")
@@ -118,6 +129,7 @@ def start_server(
     port: int,
     is_reasoning_model: bool,
     extra_args: list[str],
+    cohere_parser: str = DEFAULT_COHERE_PARSER,
     log_prefix: str = "vllm-cohere-e2e-",
 ) -> ManagedServer:
     cmd = build_serve_command(
@@ -126,6 +138,7 @@ def start_server(
         port=port,
         is_reasoning_model=is_reasoning_model,
         extra_args=extra_args,
+        cohere_parser=cohere_parser,
     )
     env = os.environ.copy()
     env["VLLM_ENABLE_COHERE_API"] = "1"
@@ -218,6 +231,17 @@ def add_server_args(
         ),
     )
     parser.add_argument(
+        "--cohere-parser",
+        default=DEFAULT_COHERE_PARSER,
+        help=(
+            "Parser name passed to both --tool-call-parser and "
+            "--reasoning-parser when this script starts the server. Must "
+            "be registered in vllm.tool_parsers / vllm.reasoning: "
+            "cohere_command3 or cohere_command4 "
+            "(default: %(default)s)."
+        ),
+    )
+    parser.add_argument(
         "--startup-timeout",
         type=float,
         default=1800.0,
@@ -270,6 +294,7 @@ def ensure_server(
         port=parsed.port or 8000,
         is_reasoning_model=args.is_reasoning_model,
         extra_args=args.extra_server_args,
+        cohere_parser=args.cohere_parser,
         log_prefix=log_prefix,
     )
     try:
