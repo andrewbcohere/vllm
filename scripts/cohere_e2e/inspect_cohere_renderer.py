@@ -120,6 +120,19 @@ def _parse_args() -> argparse.Namespace:
         help="Reasoning toggle forwarded via chat_template_kwargs.",
     )
     p.add_argument(
+        "--citation-mode",
+        default=None,
+        choices=[None, "enabled", "disabled", "fast", "accurate", "off"],
+        help=(
+            "citation_options.mode forwarded via chat_template_kwargs. "
+            "'enabled'/'disabled' are the current vocabulary; "
+            "'fast'/'accurate'/'off' are the legacy values, kept here so "
+            "you can inspect how they normalize (cmd3 -> citation_quality "
+            "on/off, cmd4 -> grounding enabled/disabled). Omit to leave "
+            "citation_options unset."
+        ),
+    )
+    p.add_argument(
         "--show-token-ids",
         action="store_true",
         help="Print prompt_token_ids alongside the text.",
@@ -196,7 +209,8 @@ def _build_v2_request(args: argparse.Namespace) -> CohereChatV2Request:
         body["safety_mode"] = args.safety_mode.upper()
     if args.reasoning:
         body["thinking"] = {"type": args.reasoning}
-    body["citation_options"] = {"mode": "FAST"}
+    if args.citation_mode:
+        body["citation_options"] = {"mode": args.citation_mode.upper()}
     return CohereChatV2Request.model_validate(body)
 
 
@@ -253,6 +267,13 @@ async def main() -> int:
             chat_template_kwargs["safety_mode"] = args.safety_mode
         if args.reasoning is not None:
             chat_template_kwargs["reasoning_type"] = args.reasoning
+        if args.citation_mode is not None:
+            # The renderer derives cmd3's ``citation_quality`` and cmd4's
+            # ``grounding`` from this same key, so one flag covers both
+            # template families.
+            chat_template_kwargs["citation_options"] = {
+                "mode": args.citation_mode.upper()
+            }
 
     params = ChatParams(chat_template_kwargs=chat_template_kwargs)
 
